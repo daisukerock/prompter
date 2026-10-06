@@ -15,7 +15,7 @@ function json(status, body) {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
-globalThis.fetch = async (url, init = {}) => {
+globalThis.fetch = (url, init = {}) => {
   const call = {
     url: String(url),
     method: init.method || 'GET',
@@ -23,8 +23,18 @@ globalThis.fetch = async (url, init = {}) => {
     body: init.body ? JSON.parse(init.body) : null,
   };
   calls.push(call);
-  return responder(call, calls.length);
+  // 本物のfetchと同じく、中断されたら AbortError で失敗させる
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }));
+    if (init.signal) {
+      if (init.signal.aborted) return abort();
+      init.signal.addEventListener('abort', abort, { once: true });
+    }
+    Promise.resolve().then(() => responder(call, calls.length)).then(resolve, reject);
+  });
 };
+
+const never = () => new Promise(() => {});
 
 beforeEach(() => {
   calls = [];
@@ -190,6 +200,28 @@ test('Gemini: 安全のために止まったら、拒否として扱う。モデ
     ],
   });
   assert.deepEqual(await AI.listModels({ provider: 'gemini', apiKey: 'k', model: '' }), [{ id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' }]);
+});
+
+test('Gemini: Flash-Liteは考える量を最小にする', async () => {
+  responder = () => json(200, { candidates: [{ content: { parts: [{ text: JSON.stringify(RESULT) }] }, finishReason: 'STOP' }] });
+  await AI.analyze({ provider: 'gemini', apiKey: 'k', model: 'gemini-3.5-flash-lite' }, input);
+  assert.deepEqual(calls[0].body.generationConfig.thinkingConfig, { thinkingLevel: 'minimal' });
+  assert.equal(AI.PROVIDERS.gemini.defaultModel, 'gemini-3.5-flash-lite');
+});
+
+test('応答が遅すぎるときは、時間切れのエラーにして、速いモデルを案内する', async () => {
+  responder = never;
+  for (const cfg of [
+    { provider: 'gemini', apiKey: 'k', model: 'gemini-3.5-flash' },
+    { provider: 'openai', apiKey: 'k', model: 'gpt-5.6-luna' },
+    { provider: 'claude', apiKey: 'k', model: 'claude-haiku-4-5' },
+  ]) {
+    await assert.rejects(
+      AI.analyze(cfg, input, { timeoutMs: 50 }),
+      (e) => e.code === 'timeout' && /Flash-Lite/.test(e.message),
+      cfg.provider,
+    );
+  }
 });
 
 test('通信できないときは、ネットワークのエラーにする', async () => {

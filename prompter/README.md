@@ -16,10 +16,11 @@ HTML/CSS/JavaScriptだけで動き、ビルドも中継サーバーも要りま�
 |---|---|---|
 | Claude | `claude-sonnet-5-5` (Haiku 4.5・Opus 5.5も選べる) | 公式SDK(`@anthropic-ai/sdk`)をブラウザ用にまとめたもの |
 | ChatGPT(OpenAI) | `gpt-5.6-luna` | Chat Completions API |
-| Gemini(Google) | `gemini-3.5-flash` | Gemini API(generateContent) |
+| Gemini(Google) | `gemini-3.5-flash-lite`(速い。3.5 Flashも選べる) | Gemini API(generateContent) |
 | OpenAI互換(上級者向け) | なし(自分で入れる) | Ollama・LM Studio・OpenRouterなど |
 
 モデル名は変わりやすいので、使えない場合は、設定の「モデル一覧を取得」から選んでください。
+会議中は速さが大事なので、軽いモデル(Gemini 3.5 Flash-Lite、Claude Haiku 4.5など)が向いています。接続テストで応答が遅い(8秒超)と、その旨を表示します。
 
 ## AIに送る内容と費用
 

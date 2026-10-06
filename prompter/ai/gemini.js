@@ -16,6 +16,7 @@ function headers(cfg) {
 
 // 会議中は速さを優先して、考える量を少なめにする(モデルの世代で指定の仕方が違う)
 function thinkingConfig(model) {
+  if (/^gemini-[3-9].*flash-lite/.test(model)) return { thinkingLevel: 'minimal' };
   if (/^gemini-[3-9]/.test(model)) return { thinkingLevel: 'low' };
   if (/^gemini-2\.5-flash/.test(model)) return { thinkingBudget: 0 };
   return null;
@@ -24,7 +25,7 @@ function thinkingConfig(model) {
 // 任意の指定を受け付けなかったモデルは、次回から付けない
 const plainModels = new Set();
 
-async function generate(cfg, system, user, json) {
+async function generate(cfg, system, user, json, timeoutMs) {
   const model = modelId(cfg);
   const url = GEMINI_BASE + '/models/' + encodeURIComponent(model) + ':generateContent';
   const build = (withOptional) => {
@@ -42,11 +43,11 @@ async function generate(cfg, system, user, json) {
   const withOptional = !plainModels.has(model);
   let data;
   try {
-    data = await fetchJson(url, { headers: headers(cfg), body: build(withOptional) });
+    data = await fetchJson(url, { headers: headers(cfg), body: build(withOptional), timeoutMs });
   } catch (e) {
     if (!(withOptional && e instanceof AIError && e.code === 'badrequest')) throw e;
     plainModels.add(model);
-    data = await fetchJson(url, { headers: headers(cfg), body: build(false) });
+    data = await fetchJson(url, { headers: headers(cfg), body: build(false), timeoutMs });
   }
   if (data && data.promptFeedback && data.promptFeedback.blockReason) throw new AIError('refusal', MESSAGES.refusal);
   const candidate = data && data.candidates && data.candidates[0];
@@ -60,13 +61,13 @@ async function generate(cfg, system, user, json) {
   return parts.filter((p) => !p.thought && typeof p.text === 'string').map((p) => p.text).join('');
 }
 
-export async function analyze(cfg, input) {
-  const text = await generate(cfg, SYSTEM_ANALYZE, buildAnalyzeInput(input), true);
+export async function analyze(cfg, input, opts = {}) {
+  const text = await generate(cfg, SYSTEM_ANALYZE, buildAnalyzeInput(input), true, opts.timeoutMs);
   return normalizeResult(parseJsonLoose(text));
 }
 
-export async function explain(cfg, term, quote) {
-  const text = await generate(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false);
+export async function explain(cfg, term, quote, opts = {}) {
+  const text = await generate(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false, opts.timeoutMs);
   return text.trim();
 }
 
