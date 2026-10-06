@@ -1,7 +1,8 @@
 // Gemini(Google)への接続。利用者が入れたAPIキーで、ブラウザから直接呼ぶ。
 import {
-  AIError, MESSAGES, RESULT_SCHEMA, SYSTEM_ANALYZE, SYSTEM_EXPLAIN,
-  buildAnalyzeInput, buildExplainInput, fetchJson, normalizeResult, parseJsonLoose,
+  AIError, MESSAGES, RESULT_SCHEMA, SYSTEM_ANALYZE, SYSTEM_EXPLAIN, SYSTEM_SUMMARY,
+  buildAnalyzeInput, buildExplainInput, buildSummaryInput, fetchJson, httpError, normalizeResult,
+  parseJsonLoose, readSse,
 } from './common.js';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
@@ -69,6 +70,111 @@ export async function analyze(cfg, input, opts = {}) {
 export async function explain(cfg, term, quote, opts = {}) {
   const text = await generate(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false, opts.timeoutMs);
   return text.trim();
+}
+
+const BLOCKED = ['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII'];
+
+async function errorOf(res) {
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = null; }
+  const detail = data && data.error && (data.error.message || data.error.status);
+  return httpError(res.status, detail);
+}
+
+// 検索の裏付け情報は、何回かに分けて届くことがあるので、まとめる
+function mergeMeta(meta, next) {
+  if (!next) return meta;
+  const base = meta || { groundingChunks: [], webSearchQueries: [], searchEntryPoint: null };
+  return {
+    groundingChunks: base.groundingChunks.concat(next.groundingChunks || []),
+    webSearchQueries: [...new Set(base.webSearchQueries.concat(next.webSearchQueries || []))],
+    searchEntryPoint: next.searchEntryPoint || base.searchEntryPoint,
+  };
+}
+
+// 情報源(https のものだけ。同じ名前は1つにまとめる)
+function sourcesOf(meta) {
+  const out = [];
+  const seen = new Set();
+  for (const chunk of (meta && meta.groundingChunks) || []) {
+    const web = chunk && chunk.web;
+    if (!web || !/^https:\/\//.test(String(web.uri || ''))) continue;
+    const title = String(web.title || web.uri);
+    if (seen.has(title)) continue;
+    seen.add(title);
+    out.push({ title, uri: web.uri });
+  }
+  return out.slice(0, 8);
+}
+
+// 「要点」: Google検索で確かめながら、3行の要点を少しずつ受け取る
+export async function summarize(cfg, term, quote, opts = {}) {
+  const model = String(opts.model || cfg.model || '').trim().replace(/^models\//, '');
+  const url = GEMINI_BASE + '/models/' + encodeURIComponent(model) + ':streamGenerateContent?alt=sse';
+  const key = 'summary:' + model;
+  const build = (withOptional) => {
+    const thinking = withOptional ? thinkingConfig(model) : null;
+    return {
+      systemInstruction: { parts: [{ text: SYSTEM_SUMMARY }] },
+      contents: [{ role: 'user', parts: [{ text: buildSummaryInput(term, quote, opts.today) }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: thinking ? { thinkingConfig: thinking } : {},
+    };
+  };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs || 90000);
+  const send = (withOptional) => fetch(url, {
+    method: 'POST',
+    headers: headers(cfg),
+    body: JSON.stringify(build(withOptional)),
+    signal: ctrl.signal,
+  });
+  try {
+    const withOptional = !plainModels.has(key);
+    let res = await send(withOptional);
+    if (!res.ok) {
+      const err = await errorOf(res);
+      if (!(withOptional && err.code === 'badrequest')) throw err;
+      // 考える量の指定を受け付けないモデルなら、外して1回だけ送り直す
+      plainModels.add(key);
+      res = await send(false);
+      if (!res.ok) throw await errorOf(res);
+    }
+    let text = '';
+    let meta = null;
+    let finish = '';
+    await readSse(res, (chunk) => {
+      if (chunk.error) throw httpError(chunk.error.code || 500, chunk.error.message);
+      if (chunk.promptFeedback && chunk.promptFeedback.blockReason) throw new AIError('refusal', MESSAGES.refusal);
+      const cand = chunk.candidates && chunk.candidates[0];
+      if (!cand) return;
+      if (cand.groundingMetadata) meta = mergeMeta(meta, cand.groundingMetadata);
+      if (cand.finishReason) finish = cand.finishReason;
+      const parts = (cand.content && cand.content.parts) || [];
+      const added = parts.filter((p) => !p.thought && typeof p.text === 'string').map((p) => p.text).join('');
+      if (added) {
+        text += added;
+        if (opts.onText) opts.onText(text);
+      }
+    });
+    if (BLOCKED.includes(finish)) throw new AIError('refusal', MESSAGES.refusal);
+    if (!text.trim()) throw new AIError('parse', MESSAGES.parse);
+    return {
+      text: text.trim(),
+      sources: sourcesOf(meta),
+      queries: (meta && meta.webSearchQueries) || [],
+      // Googleの規約で、検索で裏付けた結果には、この「検索候補」の表示が必要
+      suggestionHtml: (meta && meta.searchEntryPoint && meta.searchEntryPoint.renderedContent) || '',
+      model,
+      truncated: finish === 'MAX_TOKENS',
+    };
+  } catch (e) {
+    if (e instanceof AIError) throw e;
+    if (e && e.name === 'AbortError') throw new AIError('timeout', MESSAGES.timeout);
+    throw new AIError('network', MESSAGES.network);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function listModels(cfg) {
