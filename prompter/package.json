@@ -1,0 +1,6 @@
+{
+  "name": "prompter",
+  "private": true,
+  "type": "module",
+  "description": "会話を聞きながら、知らない言葉の意味と気をつけたい点をカードで出すWebアプリ(各自のAIで動く)"
+}

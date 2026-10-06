@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1b2433">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="data:,">
+<title>プロンプター</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1>プロンプター</h1>
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" data-view="live" role="tab">聞く</button>
+    <button class="tab" data-view="saved" role="tab">保存カード <span id="savedCount" class="badge">0</span></button>
+    <button class="tab" data-view="settings" role="tab">設定</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ライブ画面 -->
+  <section id="view-live" class="view is-active">
+    <div class="live-bar">
+      <button id="listenBtn" class="btn btn-primary btn-big">● 聞き取り開始</button>
+      <button id="aiToggle" class="btn ai-chip" type="button"></button>
+      <button id="demoBtn" class="btn">デモ</button>
+      <button id="clearBtn" class="btn">表示を消す</button>
+      <span id="status" class="status" aria-live="polite"></span>
+    </div>
+
+    <div class="live-grid">
+      <section class="pane pane-cards">
+        <h2>カード</h2>
+        <div id="setupBanner" class="banner" hidden>
+          <p>AIを設定すると、知らない言葉の意味が、その場で出ます。いまは、英字の略語と、気をつけたい言葉だけを拾います。</p>
+          <button id="setupBtn" class="btn btn-sm btn-primary" type="button">AIを設定する</button>
+        </div>
+        <div id="cards" class="cards" aria-live="polite"></div>
+        <p id="cardsEmpty" class="empty">用語や、気をつけたい点が出ると、ここにカードが出ます。</p>
+        <details id="historyBox" class="history" hidden>
+          <summary>さっきまでのカード <span id="historyCount" class="badge">0</span></summary>
+          <div id="history" class="cards"></div>
+        </details>
+      </section>
+
+      <section class="pane pane-transcript">
+        <h2>文字起こし</h2>
+        <div id="transcript" class="transcript"></div>
+        <form id="typeForm" class="type-form">
+          <input id="typeInput" type="text" placeholder="文を入れて試す(話した内容の代わりにも使えます)" autocomplete="off">
+          <button class="btn" type="submit">送る</button>
+        </form>
+      </section>
+    </div>
+  </section>
+
+  <!-- 保存カード -->
+  <section id="view-saved" class="view">
+    <div class="saved-bar">
+      <div class="filters" id="filters">
+        <button class="chip is-active" data-filter="all">すべて</button>
+        <button class="chip" data-filter="new">新しい</button>
+        <button class="chip" data-filter="studied">調べた</button>
+        <button class="chip" data-filter="learned">覚えた</button>
+      </div>
+      <button id="exportBtn" class="btn">一覧をコピー</button>
+    </div>
+    <div id="savedList" class="cards"></div>
+    <p id="savedEmpty" class="empty">保存したカードは、まだありません。</p>
+  </section>
+
+  <!-- 設定 -->
+  <section id="view-settings" class="view">
+    <div class="settings">
+      <section class="group">
+        <h2>AI(自分のAPIキーで使う)</h2>
+        <p class="note">このアプリは辞書を持ちません。用語の意味や、気をつけたい点は、あなたが選んだAIが答えます。</p>
+
+        <div class="setting">
+          <label for="providerSelect">AIサービス</label>
+          <select id="providerSelect">
+            <option value="claude">Claude</option>
+            <option value="openai">ChatGPT(OpenAI)</option>
+            <option value="gemini">Gemini(Google)</option>
+            <option value="compatible">OpenAI互換(上級者向け)</option>
+          </select>
+        </div>
+
+        <div class="setting" id="baseUrlRow" hidden>
+          <label for="baseUrlInput">接続先URL</label>
+          <input id="baseUrlInput" type="url" inputmode="url" placeholder="例: http://localhost:11434/v1" autocomplete="off" spellcheck="false">
+          <p class="note">Ollama、LM Studio、OpenRouterなど、OpenAI互換の接続先です。ブラウザからの接続を許可する設定(CORS)が必要です。</p>
+        </div>
+
+        <div class="setting">
+          <label for="keyInput">APIキー</label>
+          <div class="row-inline">
+            <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="">
+            <button id="keyShowBtn" class="btn btn-sm" type="button">表示</button>
+          </div>
+          <p class="note" id="keyNote"></p>
+          <label class="check"><input id="rememberKey" type="checkbox" checked> この端末に保存する(オフにすると、画面を閉じたら消えます)</label>
+        </div>
+
+        <div class="setting">
+          <label for="modelInput">モデル</label>
+          <input id="modelInput" type="text" autocomplete="off" spellcheck="false">
+          <div class="row-inline">
+            <select id="modelPick" aria-label="モデルの候補"></select>
+            <button id="modelsBtn" class="btn btn-sm" type="button">モデル一覧を取得</button>
+          </div>
+          <p class="note" id="modelNote"></p>
+        </div>
+
+        <div class="setting">
+          <div class="row">
+            <button id="testBtn" class="btn btn-primary" type="button">接続テスト</button>
+            <button id="keyClearBtn" class="btn btn-danger" type="button">このAPIキーを削除</button>
+          </div>
+          <p class="test-result" id="testResult" aria-live="polite"></p>
+        </div>
+
+        <div class="setting">
+          <h3>送られる内容と、キーの扱い</h3>
+          <ul class="note">
+            <li>AIがオンの間は、文字起こしの直近の数文と、すでに出た語の一覧が、選んだAIサービスに送られます。音声そのものは送りません。</li>
+            <li>APIキーは、この端末のブラウザの中だけに保存します。ほかの人が使う端末では、「この端末に保存する」をオフにしてください。</li>
+            <li>料金は、各AIサービスの従量課金です。サービスの管理画面で、利用上限を設定しておくと安心です。</li>
+            <li>組織の会議で使う場合は、外部のAIサービスに会話を送ってよいか、組織のルールを確認してください。</li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="group">
+        <h2>そのほか</h2>
+        <div class="setting">
+          <label for="chatSelect">「チャットで聞く」で開くAI</label>
+          <select id="chatSelect">
+            <option value="claude">Claude</option>
+            <option value="chatgpt">ChatGPT</option>
+            <option value="gemini">Gemini</option>
+          </select>
+          <p class="note">質問文をコピーして、選んだAIのサイトを開きます。APIキーは使いません。</p>
+        </div>
+        <div class="setting">
+          <label for="sizeSelect">文字の大きさ</label>
+          <select id="sizeSelect">
+            <option value="s">小</option>
+            <option value="m">中</option>
+            <option value="l">大</option>
+          </select>
+        </div>
+        <div class="setting">
+          <label class="check"><input id="wakeLock" type="checkbox" checked> 聞き取り中は、画面を消さない</label>
+        </div>
+        <div class="setting">
+          <h3>データについて</h3>
+          <ul class="note">
+            <li>音声は保存しません。文字起こしは、この画面を閉じると消えます。</li>
+            <li>保存したカードは、この端末のブラウザの中だけに残ります。</li>
+            <li>音声認識は、ブラウザ(Safari・Chrome)の機能を使います。端末の設定によっては、音声が各社のサーバーで処理されます。</li>
+          </ul>
+          <div class="row">
+            <button id="resetKnown" class="btn" type="button">「知っている」をリセット</button>
+            <button id="resetAll" class="btn btn-danger" type="button">保存カードをすべて削除</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
