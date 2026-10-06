@@ -44,6 +44,12 @@ export const PROVIDERS = {
       { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite(速い・標準)' },
       { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash(高性能・遅め)' },
     ],
+    // 「要点」(Google検索つき)に使うモデル。ボタンを押したときだけ動くので、性能を優先する
+    defaultSummaryModel: 'gemini-3.5-flash',
+    summaryModels: [
+      { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash(高性能・標準)' },
+      { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite(速い)' },
+    ],
     chatUrl: 'https://gemini.google.com/app',
     load: () => import('./gemini.js'),
   },
@@ -85,7 +91,7 @@ function clean(cfg) {
 }
 
 // 待ち時間の上限(会議中は短く、接続テストと「詳しく」は長めに待つ)
-const TIMEOUT = { analyze: 30000, explain: 45000, test: 60000 };
+const TIMEOUT = { analyze: 30000, explain: 45000, test: 60000, summary: 90000 };
 
 // 発言から、用語と気をつけたい点を見つける
 export async function analyze(cfg, input, opts = {}) {
@@ -97,6 +103,18 @@ export async function analyze(cfg, input, opts = {}) {
 export async function explain(cfg, term, quote) {
   cfg = clean(cfg);
   return (await adapter(cfg)).explain(cfg, term, quote, { timeoutMs: TIMEOUT.explain });
+}
+
+// 「要点」(Google検索で確かめた3行の要点)を作れるか。いまはGeminiだけ
+export function canSummarize(cfg) {
+  return !!cfg && cfg.provider === 'gemini';
+}
+
+// 「要点」を作る。opts.onText(途中までの文) で、届いた分から表示できる
+export async function summarize(cfg, term, quote, opts = {}) {
+  cfg = clean(cfg);
+  if (!canSummarize(cfg)) throw new AIError('config', '「要点」は、いまはGeminiで使えます。設定でGeminiを選んでください。');
+  return (await adapter(cfg)).summarize(cfg, term, quote, { timeoutMs: TIMEOUT.summary, ...opts });
 }
 
 export async function listModels(cfg) {

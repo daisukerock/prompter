@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AIError, buildAnalyzeInput, buildExplainInput, httpError, normalizeResult, parseJsonLoose,
+  AIError, buildAnalyzeInput, buildExplainInput, buildSummaryInput, httpError, normalizeResult, parseJsonLoose,
+  parseSummary, readSse, todayString,
 } from '../../prompter/ai/common.js';
 
 test('発言の「<」「>」を全角にして、区切りの印を偽装できないようにする', () => {
@@ -52,4 +53,41 @@ test('HTTPの状態番号から、エラーの種類を決める', () => {
   const bad = httpError(400, 'Unsupported parameter');
   assert.equal(bad.code, 'badrequest');
   assert.match(bad.message, /Unsupported parameter/);
+});
+
+test('要点: 「何の話/いまの状況/注目点」の3行を読み取る(記号や書きかけでも読む)', () => {
+  assert.deepEqual(parseSummary('何の話: 米国の関税政策。\n**今の状況**: 2026年10月時点で税率は…\n- 注目点：交渉の行方'), [
+    { label: '何の話', text: '米国の関税政策。' },
+    { label: 'いまの状況', text: '2026年10月時点で税率は…' },
+    { label: '注目点', text: '交渉の行方' },
+  ]);
+  // 書きかけ(ラベルの途中まで)
+  assert.deepEqual(parseSummary('何の話: 米国の'), [{ label: '何の話', text: '米国の' }]);
+  // 形が崩れていても、捨てずに出す
+  assert.deepEqual(parseSummary('前置きの文\n何の話: X\n続きの行'), [
+    { label: '', text: '前置きの文' },
+    { label: '何の話', text: 'X 続きの行' },
+  ]);
+  assert.deepEqual(parseSummary(''), []);
+});
+
+test('要点: 依頼文に、話題・場面・今日の日付を入れ、区切りの印は全角にする', () => {
+  assert.equal(buildSummaryInput('関税', '<b>場面</b>', '2026-10-07'), '話題: 関税\n出てきた場面: 「＜b＞場面＜/b＞」\n今日の日付: 2026-10-07');
+  assert.equal(todayString(new Date(2026, 0, 5)), '2026-01-05');
+});
+
+test('SSE: 少しずつ届いても、まとめて届いても、同じように読む', async () => {
+  const events = ['data: {"n":1}\n\n', 'data: {"n"', ':2}\r\n\r\ndata: [DONE]\n\n', 'data: {"n":3}'];
+  const enc = new TextEncoder();
+  const streamed = new Response(new ReadableStream({
+    start(c) { events.forEach((e) => c.enqueue(enc.encode(e))); c.close(); },
+  }));
+  const got = [];
+  await readSse(streamed, (o) => got.push(o.n));
+  assert.deepEqual(got, [1, 2, 3]);
+
+  const whole = { body: null, text: async () => events.join('') };
+  const got2 = [];
+  await readSse(whole, (o) => got2.push(o.n));
+  assert.deepEqual(got2, [1, 2, 3]);
 });

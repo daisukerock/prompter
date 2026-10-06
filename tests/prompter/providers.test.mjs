@@ -224,6 +224,78 @@ test('応答が遅すぎるときは、時間切れのエラーにして、速�
   }
 });
 
+// SSE(少しずつ届く応答)を作る
+function sse(chunks, status = 200) {
+  const enc = new TextEncoder();
+  return new Response(new ReadableStream({
+    start(c) {
+      chunks.forEach((obj) => c.enqueue(enc.encode('data: ' + JSON.stringify(obj) + '\r\n\r\n')));
+      c.close();
+    },
+  }), { status, headers: { 'content-type': 'text/event-stream' } });
+}
+
+test('Gemini 要点: Google検索つきで、少しずつ受け取り、情報源と検索候補を返す', async () => {
+  responder = () => sse([
+    { candidates: [{ content: { parts: [{ text: '考え中', thought: true }, { text: '何の話: 米国の関税政策。\n' }] } }] },
+    { candidates: [{ content: { parts: [{ text: 'いまの状況: 2026年10月時点で…\n注目点: 交渉の行方' }] } }] },
+    { candidates: [{
+      finishReason: 'STOP',
+      groundingMetadata: {
+        webSearchQueries: ['トランプ 関税 現状'],
+        groundingChunks: [
+          { web: { uri: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/a', title: 'example.com' } },
+          { web: { uri: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/b', title: 'example.com' } },
+          { web: { uri: 'javascript:alert(1)', title: 'bad' } },
+          { web: { uri: 'https://news.example.jp/x', title: 'news.example.jp' } },
+        ],
+        searchEntryPoint: { renderedContent: '<style>.c{}</style><div class="c">Google</div>' },
+      },
+    }] },
+  ]);
+  const seen = [];
+  const out = await AI.summarize({ provider: 'gemini', apiKey: 'AIza-k', model: 'gemini-3.5-flash-lite' }, 'トランプ大統領の関税', '関税はどうなってる', {
+    model: 'gemini-3.5-flash', today: '2026-10-07', onText: (t) => seen.push(t),
+  });
+  const c = calls[0];
+  assert.equal(c.url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse');
+  assert.equal(c.headers.get('x-goog-api-key'), 'AIza-k');
+  assert.deepEqual(c.body.tools, [{ google_search: {} }]);
+  assert.deepEqual(c.body.generationConfig.thinkingConfig, { thinkingLevel: 'low' });
+  assert.match(c.body.contents[0].parts[0].text, /話題: トランプ大統領の関税[\s\S]*今日の日付: 2026-10-07/);
+  assert.ok(c.body.systemInstruction.parts[0].text.includes('Google検索'));
+  assert.equal(seen.length, 2, '届いた分ずつ知らせる');
+  assert.ok(seen[0].startsWith('何の話'));
+  assert.equal(out.text, '何の話: 米国の関税政策。\nいまの状況: 2026年10月時点で…\n注目点: 交渉の行方');
+  assert.deepEqual(out.sources.map((s) => s.title), ['example.com', 'news.example.jp']);
+  assert.deepEqual(out.queries, ['トランプ 関税 現状']);
+  assert.match(out.suggestionHtml, /Google/);
+  assert.equal(out.model, 'gemini-3.5-flash');
+});
+
+test('Gemini 要点: エラー・拒否・時間切れを、利用者向けのエラーにする', async () => {
+  const cfg = { provider: 'gemini', apiKey: 'k', model: 'gemini-3.5-flash-lite' };
+  responder = () => json(429, { error: { code: 429, message: 'Resource exhausted' } });
+  await assert.rejects(AI.summarize(cfg, 'X', ''), (e) => e.code === 'ratelimit');
+
+  responder = () => sse([{ error: { code: 503, message: 'overloaded' } }]);
+  await assert.rejects(AI.summarize(cfg, 'X', ''), (e) => e.code === 'server');
+
+  responder = () => sse([{ candidates: [{ finishReason: 'SAFETY' }] }]);
+  await assert.rejects(AI.summarize(cfg, 'X', ''), (e) => e.code === 'refusal');
+
+  responder = never;
+  await assert.rejects(AI.summarize(cfg, 'X', '', { timeoutMs: 50 }), (e) => e.code === 'timeout');
+});
+
+test('要点はGeminiだけ(ほかのサービスでは、呼ばずに案内する)', async () => {
+  responder = () => { throw new Error('呼ばれてはいけない'); };
+  assert.equal(AI.canSummarize({ provider: 'gemini' }), true);
+  assert.equal(AI.canSummarize({ provider: 'claude' }), false);
+  await assert.rejects(AI.summarize({ provider: 'claude', apiKey: 'k', model: 'claude-sonnet-5-5' }, 'X', ''), (e) => e.code === 'config');
+  assert.equal(calls.length, 0);
+});
+
 test('通信できないときは、ネットワークのエラーにする', async () => {
   responder = () => { throw new TypeError('Failed to fetch'); };
   await assert.rejects(AI.analyze({ provider: 'gemini', apiKey: 'k', model: 'gemini-3.5-flash' }, input), (e) => e.code === 'network');
