@@ -39,8 +39,11 @@ export const PROVIDERS = {
     keyHint: 'AIzaで始まるキー',
     keyUrl: 'https://aistudio.google.com/apikey',
     keySite: 'Google AI Studio',
-    defaultModel: 'gemini-3.5-flash',
-    suggestions: [{ id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' }],
+    defaultModel: 'gemini-3.5-flash-lite',
+    suggestions: [
+      { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite(速い・標準)' },
+      { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash(高性能・遅め)' },
+    ],
     chatUrl: 'https://gemini.google.com/app',
     load: () => import('./gemini.js'),
   },
@@ -81,16 +84,19 @@ function clean(cfg) {
   return { ...cfg, apiKey: String(cfg.apiKey || '').trim(), model: String(cfg.model || '').trim() };
 }
 
+// 待ち時間の上限(会議中は短く、接続テストと「詳しく」は長めに待つ)
+const TIMEOUT = { analyze: 30000, explain: 45000, test: 60000 };
+
 // 発言から、用語と気をつけたい点を見つける
-export async function analyze(cfg, input) {
+export async function analyze(cfg, input, opts = {}) {
   cfg = clean(cfg);
-  return (await adapter(cfg)).analyze(cfg, input);
+  return (await adapter(cfg)).analyze(cfg, input, { timeoutMs: TIMEOUT.analyze, ...opts });
 }
 
 // 1つの言葉を、もう少し詳しく説明する
 export async function explain(cfg, term, quote) {
   cfg = clean(cfg);
-  return (await adapter(cfg)).explain(cfg, term, quote);
+  return (await adapter(cfg)).explain(cfg, term, quote, { timeoutMs: TIMEOUT.explain });
 }
 
 export async function listModels(cfg) {
@@ -105,6 +111,6 @@ export async function listModels(cfg) {
 // 短い例文で、実際に呼べるかを確かめる
 export async function testConnection(cfg) {
   const started = Date.now();
-  const result = await analyze(cfg, { context: [], utterance: TEST_UTTERANCE, exclude: [] });
+  const result = await analyze(cfg, { context: [], utterance: TEST_UTTERANCE, exclude: [] }, { timeoutMs: TIMEOUT.test });
   return { result, ms: Date.now() - started };
 }

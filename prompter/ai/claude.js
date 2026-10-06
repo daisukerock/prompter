@@ -84,12 +84,14 @@ function apiMessage(e) {
   return (e.error && e.error.error && e.error.error.message) || e.message;
 }
 
-async function send(cfg, { system, user, maxTokens, format }) {
+async function send(cfg, { system, user, maxTokens, format, timeoutMs }) {
   const { Anthropic } = await loadSdk();
   const client = await getClient(cfg.apiKey);
   const caps = capabilities(cfg.model);
-  const run = (withOptional) =>
-    client.beta.messages.create(buildParams({ model: cfg.model, system, user, maxTokens, format, withOptional }));
+  const run = (withOptional) => client.beta.messages.create(
+    buildParams({ model: cfg.model, system, user, maxTokens, format, withOptional }),
+    timeoutMs ? { timeout: timeoutMs } : undefined,
+  );
 
   const withOptional = !plainModels.has(cfg.model);
   let message;
@@ -124,13 +126,14 @@ async function resultFormat() {
   return formatPromise;
 }
 
-export async function analyze(cfg, input) {
+export async function analyze(cfg, input, opts = {}) {
   const format = await resultFormat();
   const text = await send(cfg, {
     system: SYSTEM_ANALYZE,
     user: buildAnalyzeInput(input),
     maxTokens: 8000,
     format,
+    timeoutMs: opts.timeoutMs,
   });
   let parsed;
   try {
@@ -141,11 +144,12 @@ export async function analyze(cfg, input) {
   return normalizeResult(parsed);
 }
 
-export async function explain(cfg, term, quote) {
+export async function explain(cfg, term, quote, opts = {}) {
   const text = await send(cfg, {
     system: SYSTEM_EXPLAIN,
     user: buildExplainInput(term, quote),
     maxTokens: 4000,
+    timeoutMs: opts.timeoutMs,
   });
   return text.trim();
 }

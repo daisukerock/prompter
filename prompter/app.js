@@ -21,6 +21,8 @@ const DEMO_LINES = [
   'SLAに関する懸念が残っていて、障害時のエスカレーションが未定です。',
   'RAGとLLMを組み合わせたMVPのロードマップを共有します。',
 ];
+const SETTINGS_VERSION = 2;
+const SLOW_TEST_MS = 8000; // 接続テストでこれより遅ければ、速いモデルを案内する
 const STATUS_LABEL = { new: '新しい', studied: '調べた', learned: '覚えた' };
 const NEXT_STATUS = { new: 'studied', studied: 'learned', learned: 'new' };
 
@@ -57,6 +59,9 @@ function loadSettings() {
   delete s.autoWiki;
   if (!AI.PROVIDERS[s.provider]) s.provider = 'claude';
   s.models = Object.assign(defaultModels(), s.models);
+  // 版2: Geminiの既定を、応答の速いFlash-Liteに変えた(以前の既定のままなら切り替える)
+  if ((saved.version || 1) < 2 && s.models.gemini === 'gemini-3.5-flash') s.models.gemini = 'gemini-3.5-flash-lite';
+  s.version = SETTINGS_VERSION;
   return s;
 }
 
@@ -716,17 +721,19 @@ async function fetchModels() {
 async function runTest() {
   const btn = $('#testBtn');
   btn.disabled = true;
-  setTestResult('確認しています…');
+  setTestResult('確認しています…(最大60秒)');
   try {
     const { result, ms } = await AI.testConnection(aiConfig());
     state.ai.halted = '';
     const terms = result.terms.map((t) => t.term + ':' + t.meaning).join(' / ');
     const risks = result.risks.map((r) => r.label).join('・');
+    const slow = ms > SLOW_TEST_MS;
     setTestResult(
       'つながりました(' + (ms / 1000).toFixed(1) + '秒)。'
       + (terms ? ' 用語 ' + terms + '。' : ' 用語は見つかりませんでした。')
-      + (risks ? ' 注意点 ' + risks + '。' : ''),
-      'ok',
+      + (risks ? ' 注意点 ' + risks + '。' : '')
+      + (slow ? ' ただし、応答が遅いため、会議中はカードが遅れて出ます。速いモデル(Gemini 3.5 Flash-Lite、Claude Haiku 4.5など)をおすすめします。' : ''),
+      slow ? 'warn' : 'ok',
     );
   } catch (e) {
     setTestResult((e && e.message) || '接続できませんでした。', 'error');
@@ -850,6 +857,7 @@ function bind() {
   });
 }
 
+persistSettings(); // 設定の版の切り替えを、保存しておく
 applyDisplaySettings();
 bind();
 renderSettings();

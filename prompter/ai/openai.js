@@ -28,7 +28,7 @@ function isReasoningModel(cfg) {
 // 任意の指定を受け付けなかった接続先とモデルは、次回から付けない
 const plainModels = new Set();
 
-async function chat(cfg, system, user, json) {
+async function chat(cfg, system, user, json, timeoutMs) {
   const url = baseUrl(cfg) + '/chat/completions';
   const key = cfg.provider + ':' + cfg.model;
   const build = (withOptional) => {
@@ -43,11 +43,11 @@ async function chat(cfg, system, user, json) {
   const withOptional = !plainModels.has(key);
   let data;
   try {
-    data = await fetchJson(url, { headers: headers(cfg), body: build(withOptional) });
+    data = await fetchJson(url, { headers: headers(cfg), body: build(withOptional), timeoutMs });
   } catch (e) {
     if (!(withOptional && e instanceof AIError && e.code === 'badrequest')) throw e;
     plainModels.add(key);
-    data = await fetchJson(url, { headers: headers(cfg), body: build(false) });
+    data = await fetchJson(url, { headers: headers(cfg), body: build(false), timeoutMs });
   }
   const choice = data && data.choices && data.choices[0];
   if (!choice) throw new AIError('parse', MESSAGES.parse);
@@ -58,13 +58,13 @@ async function chat(cfg, system, user, json) {
   return String((choice.message && choice.message.content) || '');
 }
 
-export async function analyze(cfg, input) {
-  const text = await chat(cfg, SYSTEM_ANALYZE, buildAnalyzeInput(input), true);
+export async function analyze(cfg, input, opts = {}) {
+  const text = await chat(cfg, SYSTEM_ANALYZE, buildAnalyzeInput(input), true, opts.timeoutMs);
   return normalizeResult(parseJsonLoose(text));
 }
 
-export async function explain(cfg, term, quote) {
-  const text = await chat(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false);
+export async function explain(cfg, term, quote, opts = {}) {
+  const text = await chat(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false, opts.timeoutMs);
   return text.trim();
 }
 
