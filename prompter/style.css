@@ -374,7 +374,7 @@ label + .row-inline { margin-top: 0; }
 ul.note { padding-left: 1.2em; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .setting .row:first-child { margin-top: 0; }
-.test-result { margin: 10px 0 0; font-size: .9rem; min-height: 1.2em; }
+.test-result { margin: 10px 0 0; font-size: .9rem; min-height: 1.2em; white-space: pre-line; }
 .test-result.is-ok { color: var(--green); }
 .test-result.is-warn { color: var(--yellow); }
 .test-result.is-error { color: var(--red); }

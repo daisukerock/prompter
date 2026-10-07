@@ -174,9 +174,56 @@
             <ul class="note">
               <li>AIがオンの間は、文字起こしの直近の数文と、すでに出た語の一覧が、選んだAIサービスに送られます。音声そのものは送りません。</li>
               <li>「要点」を押すと、その言葉と、出てきた一文が送られます。</li>
+              <li>下の「送る前の振り分け(Jev)」をオンにすると、新しい発言の文字起こしが、TypeSafe(Jev)にも送られます。</li>
               <li>APIキーは、この端末のブラウザの中だけに保存します。ほかの人が使う端末では、「この端末に保存する」をオフにしてください。</li>
               <li>料金は、各AIサービスの従量課金です。サービスの管理画面で、利用上限を設定しておくと安心です。</li>
               <li>組織の会議で使う場合は、外部のAIサービスに会話を送ってよいか、組織のルールを確認してください。</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="jevGroup" class="group">
+          <h2>送る前の振り分け(Jev)</h2>
+          <p class="note">AIに送る前に、TypeSafeのJevに「知らない言葉や、気をつけたい点がありそうか」を判定してもらい、ありそうな発言だけをAIに送ります。あいさつや相づちを送らずに済むので、AIの呼び出し回数とトークンが減ります(Geminiの無料枠の上限にも、かかりにくくなります)。Jevは文章を作らず、確率だけを返すので、速くて安価です。</p>
+
+          <div class="setting">
+            <label class="check"><input id="jevEnabled" type="checkbox"> Jevで振り分ける</label>
+          </div>
+
+          <div class="setting">
+            <label for="jevKeyInput">TypeSafeのAPIキー</label>
+            <div class="row-inline">
+              <input id="jevKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafeのAPIキー">
+              <button id="jevKeyShowBtn" class="pill" type="button">表示</button>
+            </div>
+            <p class="note">キーは、<a href="https://console.typesafe.ai/" target="_blank" rel="noopener noreferrer">TypeSafeのコンソール</a>の「API Keys」で作れます。AIのAPIキーと同じく、この端末のブラウザの中だけに保存します(上の「この端末に保存する」に従います)。</p>
+          </div>
+
+          <div class="setting">
+            <label for="jevLevel">振り分けの強さ</label>
+            <select id="jevLevel">
+              <option value="more">取りこぼしを減らす(AIによく送る)</option>
+              <option value="normal">標準</option>
+              <option value="save">節約を優先(AIに送る回数を減らす)</option>
+            </select>
+          </div>
+
+          <div class="setting">
+            <div class="row">
+              <button id="jevTestBtn" class="pill primary" type="button">Jev接続テスト</button>
+              <button id="jevKeyClearBtn" class="pill danger" type="button">このAPIキーを削除</button>
+            </div>
+            <p class="test-result" id="jevResult" aria-live="polite"></p>
+          </div>
+
+          <div class="setting">
+            <h3>しくみと、送られる内容</h3>
+            <ul class="note">
+              <li>AIがオンのときだけ使います。「詳しく」と「要点」は、振り分けずにAIに送ります。</li>
+              <li>まだAIに送っていない英字の略語があるときは、Jevに聞かずにAIに送ります。</li>
+              <li>Jevにつながらないときや、エラーのときは、振り分けずにAIに送ります(取りこぼさないように)。キーの誤りなどのときは、Jevを止めて知らせます。</li>
+              <li>オンの間は、新しい発言の文字起こしが、TypeSafeにも送られます(音声そのものは送りません)。組織の会議で使う場合は、組織のルールも確認してください。</li>
+              <li>料金は、TypeSafeの従量課金です(入力のトークン数で決まります)。送らずに済んだ回数と、使ったトークンは、下の「使ったトークン」で確かめられます。</li>
             </ul>
           </div>
         </section>

@@ -2,6 +2,7 @@
 
 会話を聞きながら、知らない用語・略語の意味と、気をつけたい点を、その場でカード表示するWebアプリです。
 辞書は持たず、使う人が自分で選んだAI(自分のAPIキー)で動きます。対応しているのは、Claude・ChatGPT・Gemini・OpenAI互換のAIです。
+TypeSafeのJevで、送る価値がありそうな発言だけをAIに送るように振り分けることもできます(AIの呼び出しを減らす)。
 
 - 公開ページ: https://daisukerock.github.io/prompter/
 - 使い方と仕組み: [prompter/README.md](prompter/README.md)
