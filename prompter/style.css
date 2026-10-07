@@ -365,6 +365,10 @@ h3 { font-size: .95rem; margin: 0 0 6px; }
   min-height: 48px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--line);
   background: var(--bg); max-width: 100%; width: 100%;
 }
+.setting textarea {
+  width: 100%; max-width: 100%; min-height: 72px; padding: 11px 14px; border-radius: 14px;
+  border: 1px solid var(--line); background: var(--bg); resize: vertical; line-height: 1.6;
+}
 .setting input[type="checkbox"] { width: 22px; height: 22px; flex: none; margin: 0; accent-color: var(--accent); }
 .row-inline { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 label + .row-inline { margin-top: 0; }
