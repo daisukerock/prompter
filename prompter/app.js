@@ -5,6 +5,10 @@ import * as Pacing from './pacing.js';
 import * as Recovery from './recovery.js';
 import * as Gate from './gate.js';
 import * as Jev from './ai/jev.js';
+import * as Whisper from './ai/whisper.js';
+import * as Sound from './audio.js';
+import * as Capture from './capture.js';
+import * as SttQueue from './sttqueue.js';
 import { parseSummary, todayString } from './ai/common.js';
 
 const $ = (s) => document.querySelector(s);
@@ -196,6 +200,7 @@ function loadSettings() {
     provider: 'claude', models: {}, summaryModel: AI.PROVIDERS.gemini.defaultSummaryModel, baseUrl: '',
     rememberKey: true, aiEnabled: true, chat: 'claude', size: 'm', wake: true,
     jev: false, jevLevel: Gate.DEFAULT_LEVEL, // 送る前の振り分け(Jev)
+    stt: 'groq', sttModels: {}, sttHints: '', // 聞き取り(Whisper。キーがなければ、標準の聞き取り)
   }, saved);
   // 以前の版の設定(「AIに聞く」の行き先が ai に入っていた)を引き継ぐ
   if (saved.ai && !saved.chat && CHAT_SITES[saved.ai]) s.chat = saved.ai;
@@ -203,6 +208,9 @@ function loadSettings() {
   delete s.autoWiki;
   if (!AI.PROVIDERS[s.provider]) s.provider = 'claude';
   if (!Object.prototype.hasOwnProperty.call(Gate.LEVELS, s.jevLevel)) s.jevLevel = Gate.DEFAULT_LEVEL;
+  if (s.stt !== 'browser' && !Whisper.sttProvider(s.stt)) s.stt = 'groq';
+  s.sttModels = Object.assign(Object.fromEntries(Object.entries(Whisper.STT_PROVIDERS).map(([id, w]) => [id, w.defaultModel])), s.sttModels);
+  if (typeof s.sttHints !== 'string') s.sttHints = '';
   s.models = Object.assign(defaultModels(), s.models);
   // 版2: Geminiの既定を、応答の速いFlash-Liteに変えた(以前の既定のままなら切り替える)
   if ((saved.version || 1) < 2 && s.models.gemini === 'gemini-3.5-flash') s.models.gemini = 'gemini-3.5-flash-lite';
@@ -232,6 +240,7 @@ const state = {
   jev: Object.assign(Gate.initialGate(), { judged: 0, skipped: 0, sentAcronyms: new Set() }),
   summaryBusy: 0,
   usage: {}, // この画面を開いてから使ったトークン(種類ごと)
+  sttUsage: {}, // この画面を開いてから、聞き取り(Whisper)に送った音声(サービス・モデルごと)
   ui: 1, // 設定が変わってカードのボタンが変わるときに増やす
   filter: 'all',
   transcriptOpen: false,
@@ -275,6 +284,8 @@ function setStatus(msg, warn) {
 
 function baseStatus() {
   if (state.listening && listen.shown === 'starting') return 'マイクを準備しています…(許可を求められたら「許可」を押してください)';
+  if (state.listening && listen.engine === 'whisper') return '聞いています…(Whisper・' + sttShort() + '。画面は点けたままにしてください)';
+  if (state.listening && whisper.off) return '聞いています…(標準の聞き取り。Whisperは止めています)';
   if (state.listening) return '聞いています…(画面は点けたままにしてください)';
   if (state.demoTimer) return 'デモを再生中…';
   return '';
@@ -887,6 +898,8 @@ function renderUsage() {
   // 設定画面の表
   const session = rows.length ? usageBlock('種類', rows, total) : [el('p', 'note', 'まだ使っていません。')];
   if (gateText()) session.push(el('p', 'note gate-stats', gateText() + '。'));
+  const sttSession = sttUsageText(state.sttUsage);
+  if (sttSession) session.push(el('p', 'note stt-stats', '聞き取り(Whisper): ' + sttSession + '。'));
   $('#usageSession').replaceChildren(...session);
   const today = loadTodayUsage();
   const models = Object.values(today.models)
@@ -896,7 +909,41 @@ function renderUsage() {
   $('#usageTodayTitle').textContent = '今日(' + (d.getMonth() + 1) + '月' + d.getDate() + '日)、モデルごと';
   const modelRows = models.map((m) => [String(m.model || '不明') + (m.provider === 'compatible' ? '(互換AI)' : ''), m]);
   const modelTotal = models.reduce((sum, m) => addTally(sum, m), emptyTally());
-  $('#usageToday').replaceChildren(...(models.length ? usageBlock('モデル', modelRows, modelTotal) : [el('p', 'note', 'まだ使っていません。')]));
+  const todayBlocks = models.length ? usageBlock('モデル', modelRows, modelTotal) : [el('p', 'note', 'まだ使っていません。')];
+  const sttToday = sttUsageText(today.stt);
+  if (sttToday) todayBlocks.push(el('p', 'note stt-stats', '聞き取り(Whisper): ' + sttToday + '。'));
+  $('#usageToday').replaceChildren(...todayBlocks);
+}
+
+// 例: 「3分20秒」「1時間5分」
+function durationText(seconds) {
+  const s = Math.round(Number(seconds) || 0);
+  if (s >= 3600) return Math.floor(s / 3600) + '時間' + Math.floor((s % 3600) / 60) + '分';
+  if (s >= 60) return Math.floor(s / 60) + '分' + (s % 60) + '秒';
+  return s + '秒';
+}
+
+// 例: 「whisper-large-v3 12回・音声 3分20秒」(モデルごと、「/」で区切る)
+function sttUsageText(tally) {
+  const rows = Object.values(tally && typeof tally === 'object' ? tally : {}).filter((t) => t && Number(t.n) > 0);
+  return rows.map((t) => String(t.model || '不明') + ' ' + fmt(t.n) + '回・音声 ' + durationText(t.seconds)).join(' / ');
+}
+
+// 聞き取り(Whisper)に送った音声を数える(この画面を開いてからと、今日の分)
+function recordSttUsage(u) {
+  if (!u) return;
+  const id = u.provider + '/' + u.model;
+  const add = (tally) => {
+    const t = tally[id] || (tally[id] = { provider: u.provider, model: u.model, n: 0, seconds: 0 });
+    t.n = (Number(t.n) || 0) + 1;
+    t.seconds = (Number(t.seconds) || 0) + (Number(u.seconds) || 0);
+  };
+  add(state.sttUsage);
+  const today = loadTodayUsage();
+  if (!today.stt || typeof today.stt !== 'object' || Array.isArray(today.stt)) today.stt = {};
+  add(today.stt);
+  store.set('pl_usage', today);
+  renderUsage();
 }
 
 // 例: 「Jevの振り分けで、AIに送らずに済んだ発言: 7回(判定 12回のうち)」
@@ -1398,7 +1445,16 @@ const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const listen = {
   running: false, shown: 'off', startedAt: 0, failures: 0, lastError: '', troubleSince: 0,
   restartTimer: null, showTimer: null, healthyTimer: null,
+  engine: 'browser', // browser: 標準の聞き取り(端末の音声認識) / whisper: Whisper
 };
+// Whisperで聞き取るときの様子。capture: マイク、queue: 送る順番を待っている発言、busy: 送っている途中、
+// nextAt: 次に送ってよい時刻、failures: 続けて失敗した回数、succeeded: この画面で一度でも文字にできたか、
+// off: Whisperを止めた理由(標準の聞き取りに切り替えた。設定を直すか、テストが通ると戻す)
+const whisper = {
+  capture: null, opening: false, openedAt: 0, session: 0, speaking: false, queue: [], busy: false, timer: null,
+  nextAt: 0, failures: 0, succeeded: false, warned: false, off: '',
+};
+const WHISPER_NO_SOUND_MS = 3000; // マイクを開いてから、これだけ音が届かなければ、使えない扱いにする
 const deadRecognizers = new WeakSet(); // 作り直して捨てた認識器(遅れて届く知らせは無視する)
 const LISTEN_LABEL = {
   off: '聞き取り開始',
@@ -1419,13 +1475,15 @@ function releaseWake() {
 function onPageVisible() {
   if (document.visibilityState !== 'visible' || !state.listening) return;
   requestWake();
-  if (!listen.running) openRecognizer();
+  if (listen.engine === 'whisper') ensureWhisperCapture();
+  else if (!listen.running) openRecognizer();
 }
 document.addEventListener('visibilitychange', onPageVisible);
 window.addEventListener('pageshow', onPageVisible);
 
 function startListening() {
-  if (!SR) {
+  const useWhisper = whisperReady();
+  if (!useWhisper && !SR) {
     setStatus('このブラウザは、音声認識に対応していません。文字起こし欄の入力欄から試せます。', true);
     return;
   }
@@ -1433,9 +1491,11 @@ function startListening() {
   listen.failures = 0;
   listen.lastError = '';
   listen.troubleSince = 0;
+  listen.engine = useWhisper ? 'whisper' : 'browser';
   setListenShown('starting');
   setStatus(baseStatus());
-  openRecognizer();
+  if (useWhisper) startWhisper();
+  else openRecognizer();
   requestWake();
 }
 
@@ -1547,7 +1607,8 @@ function markListenHealthy() {
   setStatus(baseStatus());
 }
 
-function stopListening() {
+// dropQueue: Whisperに送る前の発言を捨てる(聞き取りの設定を変えたとき)
+function stopListening(dropQueue) {
   state.listening = false;
   clearTimeout(listen.restartTimer);
   clearTimeout(listen.showTimer);
@@ -1563,8 +1624,209 @@ function stopListening() {
   }
   releaseWake();
   state.interim = '';
+  // Whisperは、話している途中の分も区切って送る(送り終えるまで「文字にしています」と出す)
+  stopWhisperCapture(!dropQueue);
   setListenShown('off');
   setStatus(baseStatus());
+  renderTranscript();
+}
+
+// ---------- Whisperでの聞き取り ----------
+function sttConfig() {
+  const id = state.settings.stt;
+  return { provider: id, apiKey: state.keys[id] || '', model: state.settings.sttModels[id] || '' };
+}
+const sttShort = () => (Whisper.sttProvider(state.settings.stt) || { short: '' }).short;
+const sttKeyReady = () => !!Whisper.sttProvider(state.settings.stt) && !!String(state.keys[state.settings.stt] || '').trim();
+// Whisperで聞き取れるか(キーがあり、止めておらず、この端末でマイクの音を取り込める)
+const whisperReady = () => sttKeyReady() && !whisper.off && Capture.captureSupported();
+
+// 聞き取りのヒント: 設定の「よく出る言葉」と、カードに出た言葉(新しい順)
+function sttHintList() {
+  const own = String(state.settings.sttHints || '').split(/[、,，\n]+/).map((w) => w.trim()).filter(Boolean);
+  return own.concat(state.shownTerms.slice(-15).reverse());
+}
+
+async function startWhisper() {
+  const session = ++whisper.session;
+  whisper.opening = true;
+  try {
+    const cap = await Capture.openCapture({
+      workletUrl: 'capture-worklet.js?v=' + BUILD,
+      onSegment: queueSegment,
+      onSpeaking: (on) => {
+        whisper.speaking = on;
+        updateWhisperInterim();
+      },
+      onLost: () => {
+        if (session === whisper.session) recoverWhisperCapture();
+      },
+    });
+    if (session !== whisper.session || !state.listening || listen.engine !== 'whisper') {
+      cap.stop();
+      return;
+    }
+    whisper.capture = cap;
+    whisper.opening = false;
+    whisper.openedAt = Date.now();
+    listen.running = true;
+    setListenShown('on');
+    setStatus(baseStatus());
+    // 音が届かないまま(端末の不具合など)なら、黙って何も起きない状態にせず、標準の聞き取りに切り替える
+    setTimeout(() => {
+      if (whisper.capture === cap && cap.frames === 0 && state.listening) fallbackToBrowser('マイクの音を受け取れませんでした。');
+    }, WHISPER_NO_SOUND_MS);
+  } catch (e) {
+    if (session !== whisper.session) return;
+    whisper.opening = false;
+    if (!state.listening) return;
+    const name = e && e.name;
+    if (name === 'NotAllowedError' || name === 'SecurityError' || name === 'NotFoundError') {
+      stopListening();
+      setStatus(Recovery.FATAL_ERRORS[name === 'NotFoundError' ? 'audio-capture' : 'not-allowed'], true);
+      return;
+    }
+    fallbackToBrowser('この端末では、Whisper用に音声を取り込めませんでした。');
+  }
+}
+
+// マイクを閉じる。keepQueue なら、まだ送っていない発言は送り続ける
+function stopWhisperCapture(keepQueue) {
+  whisper.session++;
+  whisper.opening = false;
+  const cap = whisper.capture;
+  whisper.capture = null;
+  if (cap) cap.stop();
+  whisper.speaking = false;
+  if (!keepQueue) {
+    whisper.queue = [];
+    clearTimeout(whisper.timer);
+  }
+  updateWhisperInterim();
+}
+
+// マイクが止められた(電話の着信など)ときは、少し待って開き直す
+function recoverWhisperCapture() {
+  if (!state.listening || listen.engine !== 'whisper') return;
+  stopWhisperCapture(true);
+  listen.running = false;
+  // しばらく聞けていたなら、新しい止まり方として数え直す
+  if (Date.now() - whisper.openedAt > 10000) listen.failures = 0;
+  listen.failures++;
+  if (listen.failures > 3) {
+    stopListening();
+    setStatus('マイクが止まりました。もう一度「聞き取り開始」を押してください。', true);
+    return;
+  }
+  setListenShown('recovering');
+  clearTimeout(listen.restartTimer);
+  if (document.visibilityState === 'hidden') return; // 画面に戻ったときに開き直す
+  listen.restartTimer = setTimeout(() => {
+    if (state.listening && listen.engine === 'whisper' && !whisper.capture && !whisper.opening) startWhisper();
+  }, 1000 * listen.failures);
+}
+
+// 画面に戻ったとき: 止まっていた音の処理を動かし直す。マイクが止まっていれば開き直す
+async function ensureWhisperCapture() {
+  const cap = whisper.capture;
+  if (!cap) {
+    if (!whisper.opening) startWhisper();
+    return;
+  }
+  if (!cap.live || !(await cap.resume())) recoverWhisperCapture();
+}
+
+function queueSegment(seg) {
+  const r = SttQueue.enqueue(whisper.queue, seg);
+  whisper.queue = r.queue;
+  if (r.dropped) {
+    whisper.warned = true;
+    setStatus('Whisperに送れない間にたまった発言のうち、古い分を捨てました。', true);
+  }
+  updateWhisperInterim();
+  pumpWhisper();
+}
+
+// 待っている発言を、まとめてWhisperに送る(サービスの上限に合わせて、間をあける)
+async function pumpWhisper() {
+  clearTimeout(whisper.timer);
+  whisper.timer = null;
+  if (whisper.busy || !whisper.queue.length) return;
+  const wait = whisper.nextAt - Date.now();
+  if (wait > 0) {
+    whisper.timer = setTimeout(pumpWhisper, wait);
+    return;
+  }
+  const { items, rest } = SttQueue.takeMerged(whisper.queue);
+  whisper.queue = rest;
+  const cfg = sttConfig();
+  const provider = Whisper.sttProvider(cfg.provider);
+  const prompt = Whisper.buildPrompt({ hints: sttHintList(), previous: state.lines.length ? state.lines[state.lines.length - 1].text : '' });
+  const gen = state.gen;
+  whisper.busy = true;
+  updateWhisperInterim();
+  try {
+    const text = await Whisper.transcribe(cfg, Sound.encodeWav(SttQueue.joinSamples(items)), { prompt, onUsage: recordSttUsage });
+    whisper.failures = 0;
+    whisper.succeeded = true;
+    if (whisper.warned) {
+      whisper.warned = false;
+      setStatus(baseStatus());
+    }
+    // 「消す」を押したあとに届いた分は、出さない
+    if (text && gen === state.gen) addFinalLine(text);
+  } catch (e) {
+    if (gen === state.gen) handleWhisperError(e, items);
+  } finally {
+    whisper.busy = false;
+    whisper.nextAt = Math.max(whisper.nextAt, Date.now() + (provider ? provider.minIntervalMs : 0));
+    updateWhisperInterim();
+    if (whisper.queue.length) pumpWhisper();
+  }
+}
+
+function handleWhisperError(e, items) {
+  const r = SttQueue.afterSttError({ failures: whisper.failures, succeeded: whisper.succeeded }, e);
+  whisper.failures = r.failures;
+  const msg = (e && e.message) || '音声の聞き取りで、エラーが起きました。';
+  if (r.action === 'fallback') {
+    fallbackToBrowser(msg);
+    return;
+  }
+  // 同じ発言を、待ってから送り直す
+  whisper.queue = items.concat(whisper.queue);
+  whisper.nextAt = Date.now() + r.wait;
+  whisper.warned = true;
+  setStatus(msg + ' 約' + Math.ceil(r.wait / 1000) + '秒後に、もう一度送ります。', true);
+}
+
+// Whisperが使えないときは、標準の聞き取りに切り替えて、止まらずに続ける
+function fallbackToBrowser(reason) {
+  whisper.off = reason || 'Whisperを使えませんでした。';
+  stopWhisperCapture(false);
+  renderSttState();
+  if (!state.listening) {
+    toast('Whisperが使えないため、次からは標準の聞き取りを使います');
+    return;
+  }
+  if (!SR) {
+    stopListening();
+    setStatus(whisper.off + ' この端末には、標準の聞き取りもありません。', true);
+    return;
+  }
+  toast('Whisperが使えないため、標準の聞き取りに切り替えました');
+  listen.engine = 'browser';
+  listen.failures = 0;
+  listen.running = false;
+  openRecognizer();
+  setStatus('Whisperが使えないため、標準の聞き取りに切り替えました。' + whisper.off, true);
+}
+
+// 文字起こし欄の、言いかけの行: 話している間は「…」、送っている間は「文字にしています」
+function updateWhisperInterim() {
+  if (listen.engine !== 'whisper') return;
+  const sending = whisper.busy || whisper.queue.length > 0;
+  state.interim = whisper.speaking && state.listening ? '…' : sending ? '(文字にしています…)' : '';
   renderTranscript();
 }
 
@@ -1613,6 +1875,9 @@ function clearScreen() {
   state.shownTerms = [];
   state.jev.sentAcronyms.clear();
   state.seen.clear();
+  whisper.queue = [];
+  clearTimeout(whisper.timer);
+  updateWhisperInterim();
   setStatus(baseStatus());
   // たくさんのカードは、1枚ずつではなく、まとめて薄くして消す
   const list = $('#cards');
@@ -1719,6 +1984,8 @@ function renderSettings() {
     select.value = state.settings.summaryModel;
   }
 
+  renderSttSettings();
+
   $('#jevEnabled').checked = !!state.settings.jev;
   $('#jevKeyInput').value = state.keys.jev || '';
   $('#jevLevel').value = state.settings.jevLevel;
@@ -1733,6 +2000,81 @@ function setTestResult(text, kind) {
   const r = $('#testResult');
   r.textContent = text;
   r.className = 'test-result' + (kind ? ' is-' + kind : '');
+}
+
+// 聞き取り(Whisper)の設定
+function renderSttSettings() {
+  const id = state.settings.stt;
+  const p = Whisper.sttProvider(id);
+  $('#sttSelect').value = id;
+  ['#sttKeyRow', '#sttModelRow', '#sttHintsRow', '#sttTestRow'].forEach((sel) => { $(sel).hidden = !p; });
+  if (p) {
+    $('#sttKeyLabel').textContent = p.short + 'のAPIキー';
+    const key = $('#sttKeyInput');
+    key.value = state.keys[id] || '';
+    key.placeholder = p.keyHint;
+    const a = el('a', null, p.keySite);
+    a.href = p.keyUrl;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    $('#sttKeyNote').replaceChildren(document.createTextNode('キーは、'), a,
+      document.createTextNode(id === 'openai' ? 'で作れます。ChatGPTと同じキーです。' : 'で、無料で作れます。'));
+    const models = p.models.slice();
+    const current = state.settings.sttModels[id];
+    if (current && !models.some((m) => m.id === current)) models.push({ id: current, label: current });
+    $('#sttModelSelect').replaceChildren(...models.map((m) => {
+      const o = el('option', null, m.label);
+      o.value = m.id;
+      return o;
+    }));
+    $('#sttModelSelect').value = current;
+  }
+  $('#sttHints').value = state.settings.sttHints || '';
+  renderSttState();
+}
+
+function setSttResult(text, kind) {
+  const r = $('#sttResult');
+  r.textContent = text;
+  r.className = 'test-result' + (kind ? ' is-' + kind : '');
+}
+
+// Whisperを止めているときは、その理由を出す
+function renderSttState() {
+  if (whisper.off) setSttResult('Whisperを止めています。' + whisper.off + ' いまは標準の聞き取りを使っています。設定を直すか、「聞き取りテスト」が通ると戻ります。', 'error');
+}
+
+// 聞き取りの方法・モデルを変えたら、止めた記録を消す。聞いている途中なら、新しい設定で聞き直す
+function onSttSettingChanged(restart) {
+  whisper.off = '';
+  whisper.failures = 0;
+  setSttResult('');
+  if (restart && state.listening) {
+    stopListening(true);
+    startListening();
+  }
+}
+
+async function runSttTest() {
+  const btn = $('#sttTestBtn');
+  btn.disabled = true;
+  setSttResult('確認しています…');
+  try {
+    const { ms } = await Whisper.testConnection(sttConfig(), { onUsage: recordSttUsage });
+    whisper.off = '';
+    whisper.failures = 0;
+    const switchNow = state.listening && listen.engine === 'browser' && whisperReady();
+    setSttResult('つながりました(' + (ms / 1000).toFixed(1) + '秒)。'
+      + (switchNow ? 'Whisperでの聞き取りに切り替えました。' : '「聞き取り開始」を押すと、Whisperで聞き取ります。'), 'ok');
+    if (switchNow) {
+      stopListening(true);
+      startListening();
+    }
+  } catch (e) {
+    setSttResult((e && e.message) || '接続できませんでした。', 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function setJevResult(text, kind) {
@@ -1925,6 +2267,7 @@ function bind() {
     state.keys[state.settings.provider] = e.target.value.trim();
     persistKeys();
     onAiSettingChanged();
+    if (state.settings.stt === state.settings.provider) $('#sttKeyInput').value = state.keys[state.settings.provider];
   });
   $('#keyShowBtn').addEventListener('click', () => {
     const input = $('#keyInput');
@@ -1963,6 +2306,45 @@ function bind() {
     onAiSettingChanged();
     toast('APIキーを削除しました');
   });
+
+  // 聞き取り(Whisper)
+  $('#sttSelect').addEventListener('change', (e) => {
+    state.settings.stt = e.target.value;
+    persistSettings();
+    renderSttSettings();
+    onSttSettingChanged(true);
+    toast(Whisper.sttProvider(e.target.value)
+      ? (sttKeyReady() ? 'Whisper(' + sttShort() + ')で聞き取ります' : sttShort() + 'のAPIキーを入れると、Whisperで聞き取ります')
+      : '標準の聞き取りを使います');
+  });
+  $('#sttKeyInput').addEventListener('input', (e) => {
+    const id = state.settings.stt;
+    if (!Whisper.sttProvider(id)) return;
+    state.keys[id] = e.target.value.trim();
+    persistKeys();
+    onSttSettingChanged(false);
+    // OpenAIのキーは、ChatGPTと同じ
+    if (id === state.settings.provider) {
+      $('#keyInput').value = state.keys[id];
+      onAiSettingChanged();
+    }
+  });
+  $('#sttKeyShowBtn').addEventListener('click', () => {
+    const input = $('#sttKeyInput');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    $('#sttKeyShowBtn').textContent = show ? '隠す' : '表示';
+  });
+  $('#sttModelSelect').addEventListener('change', (e) => {
+    state.settings.sttModels[state.settings.stt] = e.target.value;
+    persistSettings();
+    onSttSettingChanged(true);
+  });
+  $('#sttHints').addEventListener('change', (e) => {
+    state.settings.sttHints = e.target.value;
+    persistSettings();
+  });
+  $('#sttTestBtn').addEventListener('click', runSttTest);
 
   // 送る前の振り分け(Jev)
   $('#jevEnabled').addEventListener('change', (e) => {
@@ -2007,6 +2389,7 @@ function bind() {
   $('#wakeLock').addEventListener('change', (e) => { state.settings.wake = e.target.checked; persistSettings(); });
   $('#usageReset').addEventListener('click', () => {
     state.usage = {};
+    state.sttUsage = {};
     store.remove('pl_usage');
     renderUsage();
     toast('トークンの記録を消しました');

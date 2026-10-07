@@ -1,4 +1,4 @@
-// AIサービス(Claude・ChatGPT・Gemini)と、Jev(TypeSafe)の応答を模擬する。実際には通信しない。
+// AIサービス(Claude・ChatGPT・Gemini)と、Jev(TypeSafe)、Whisper(Groq・OpenAI)の応答を模擬する。実際には通信しない。
 // 発言に含まれる語を、決まった意味で返し、使ったトークン数も添える
 export const MEANINGS = {
   EBPM: ['証拠に基づく政策立案', 'データなどの根拠を政策に生かす考え方'],
@@ -77,11 +77,31 @@ function summaryChunks() {
 // opts.jev: Jevの判定(発言 → { terms, risks })。既定は jevFake
 // opts.jevFail: Jevを、前から順にこの応答で失敗させる([{ status, body }] か [{ abort: true }]。
 //   ブラウザからの接続が許可されていないとき(CORS)も、ページからは abort と同じエラーに見える)
+// 送られてきた multipart の各項目を読む(file は、大きさと種類だけ)
+export function multipartFields(buffer) {
+  const raw = buffer.toString('latin1');
+  const boundary = raw.slice(0, raw.indexOf('\r\n'));
+  const fields = {};
+  for (const part of raw.split(boundary).slice(1, -1)) {
+    const end = part.indexOf('\r\n\r\n');
+    const head = part.slice(0, end);
+    const value = part.slice(end + 4, -2);
+    const name = (head.match(/name="([^"]+)"/) || [])[1];
+    if (!name) continue;
+    fields[name] = /filename=/.test(head)
+      ? { size: value.length, type: (head.match(/Content-Type: ([^\r]+)/i) || [])[1], name: (head.match(/filename="([^"]+)"/) || [])[1], riff: value.slice(0, 4) }
+      : Buffer.from(value, 'latin1').toString('utf8');
+  }
+  return fields;
+}
+
+// opts.whisper: Whisperの応答。(n回目, 送られた項目) → { status, body } か { abort: true }。既定は { text: '' }
 export async function mockAI(page, opts = {}) {
   const log = [];
   const state = { summaryFailed: false, geminiFail: (opts.geminiFail || []).slice(), jevFail: (opts.jevFail || []).slice() };
   const geminiUsage = opts.geminiUsage || { promptTokenCount: 800, candidatesTokenCount: 50, totalTokenCount: 850 };
-  await page.route(/https:\/\/(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com|api\.typesafe\.ai)\/.*/, async (route) => {
+  let whisperCalls = 0;
+  await page.route(/https:\/\/(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com|api\.typesafe\.ai|api\.groq\.com)\/.*/, async (route) => {
     const req = route.request();
     const cors = {
       'access-control-allow-origin': '*',
@@ -90,6 +110,14 @@ export async function mockAI(page, opts = {}) {
     };
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     const url = req.url();
+    if (url.includes('/audio/transcriptions')) {
+      const fields = multipartFields(req.postDataBuffer());
+      whisperCalls++;
+      log.push({ url, method: req.method(), headers: req.headers(), fields, at: Date.now() });
+      const r = opts.whisper ? opts.whisper(whisperCalls, fields) : { status: 200, body: { text: '' } };
+      if (r.abort) return route.abort('failed');
+      return route.fulfill({ status: r.status || 200, headers: { ...cors, 'content-type': 'application/json', ...(r.headers || {}) }, body: JSON.stringify(r.body) });
+    }
     const body = req.postData() ? JSON.parse(req.postData()) : null;
     log.push({ url, method: req.method(), headers: req.headers(), body, at: Date.now() });
     const reply = (status, obj) => route.fulfill({ status, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify(obj) });

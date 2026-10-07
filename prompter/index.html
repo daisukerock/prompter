@@ -183,6 +183,59 @@
           </div>
         </section>
 
+        <section id="sttGroup" class="group">
+          <h2>聞き取り(音声認識)</h2>
+          <p class="note">会話を文字にする方法を選べます。Whisperは、話の区切りごとに音声を送って文字にします。標準の聞き取りより、専門用語や略語の聞き間違いが少なく、途中で止まりにくくなります。</p>
+
+          <div class="setting">
+            <label for="sttSelect">聞き取りの方法</label>
+            <select id="sttSelect">
+              <option value="groq">Whisper(Groq・無料枠あり)</option>
+              <option value="openai">Whisper系(OpenAI・有料)</option>
+              <option value="browser">標準(iPhoneなどの音声認識)</option>
+            </select>
+          </div>
+
+          <div class="setting" id="sttKeyRow">
+            <label for="sttKeyInput" id="sttKeyLabel">APIキー</label>
+            <div class="row-inline">
+              <input id="sttKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="">
+              <button id="sttKeyShowBtn" class="pill" type="button">表示</button>
+            </div>
+            <p class="note" id="sttKeyNote"></p>
+          </div>
+
+          <div class="setting" id="sttModelRow">
+            <label for="sttModelSelect">モデル</label>
+            <select id="sttModelSelect"></select>
+          </div>
+
+          <div class="setting" id="sttHintsRow">
+            <label for="sttHints">聞き取りのヒント(よく出る言葉)</label>
+            <textarea id="sttHints" rows="2" placeholder="例: EBPM、パーパス経営、〇〇プロジェクト"></textarea>
+            <p class="note">社名・製品名・専門用語などを、読点(、)か改行で区切って入れると、聞き間違いが減ります。カードに出た言葉も、自動でヒントにします。</p>
+          </div>
+
+          <div class="setting" id="sttTestRow">
+            <div class="row">
+              <button id="sttTestBtn" class="pill primary" type="button">聞き取りテスト</button>
+            </div>
+            <p class="test-result" id="sttResult" aria-live="polite"></p>
+          </div>
+
+          <div class="setting">
+            <h3>しくみと、送られる内容</h3>
+            <ul class="note">
+              <li>Whisperを選ぶと、話している部分の音声が、区切りごとに選んだサービスに送られます。静かな間は送りません。このアプリは音声を残しません。</li>
+              <li>キーがないとき、Whisperにつながらないとき、1日の上限に達したときは、標準の聞き取りに切り替えて、止まらずに続けます。</li>
+              <li>Groqの無料枠は、1日に2,000回・音声8時間まで、1分に20回までです(2026年10月時点の目安。変わることがあります)。上限に合わせて、5秒ほど間をあけてまとめて送ります。</li>
+              <li>OpenAIは、音声1分あたり約0.0045ドルです(gpt-transcribe)。キーは、ChatGPTと同じものを使います。</li>
+              <li>通信量は、話している時間1時間あたり約115MBです。Wi-Fiでの利用がおすすめです。</li>
+              <li>組織の会議で使う場合は、外部のサービスに音声を送ってよいか、組織のルールを確認してください。</li>
+            </ul>
+          </div>
+        </section>
+
         <section id="jevGroup" class="group">
           <h2>送る前の振り分け(Jev)</h2>
           <p class="note">AIに送る前に、TypeSafeのJevに「知らない言葉や、気をつけたい点がありそうか」を判定してもらい、ありそうな発言だけをAIに送ります。あいさつや相づちを送らずに済むので、AIの呼び出し回数とトークンが減ります(Geminiの無料枠の上限にも、かかりにくくなります)。Jevは文章を作らず、確率だけを返すので、速くて安価です。</p>
@@ -287,7 +340,7 @@
             <ul class="note">
               <li>音声は保存しません。文字起こしは、この画面を閉じると消えます。</li>
               <li>保存したカードは、この端末のブラウザの中だけに残ります。</li>
-              <li>音声認識は、ブラウザ(Safari・Chrome)の機能を使います。端末の設定によっては、音声が各社のサーバーで処理されます。</li>
+              <li>聞き取りが「標準」なら、ブラウザ(Safari・Chrome)の音声認識を使います。端末の設定によっては、音声が各社のサーバーで処理されます。Whisperを選ぶと、話している部分の音声を、選んだサービス(Groq・OpenAI)に送ります。</li>
             </ul>
             <div class="row">
               <button id="resetKnown" class="pill" type="button">「知っている」をリセット</button>
