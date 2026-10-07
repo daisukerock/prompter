@@ -135,10 +135,12 @@ export function parseSummary(text) {
 }
 
 export class AIError extends Error {
-  constructor(code, message) {
+  // extra: { retryAfterMs } など、呼び出し側が使う追加の情報
+  constructor(code, message, extra) {
     super(message);
     this.name = 'AIError';
     this.code = code;
+    if (extra) Object.assign(this, extra);
   }
 }
 
@@ -148,6 +150,7 @@ export const MESSAGES = {
   permission: 'このキーでは、このモデルを使えないようです(権限や利用条件を確認してください)。',
   notfound: 'モデルが見つかりません。設定の「モデル一覧を取得」から選んでください。',
   ratelimit: '利用上限か混雑のため、少し待ってから再開します。',
+  quota: '利用上限に達しました(1日の無料枠、または残高・請求の設定)。Geminiの1日の上限は、日本時間の16時ごろ(冬は17時ごろ)に戻ります。別のモデルに切り替えると、続けられる場合があります。',
   server: 'AIサービス側で、一時的な不具合が起きています。',
   network: '接続できませんでした。ネットワークか、接続先を確認してください。',
   timeout: 'AIの応答が、時間内に返りませんでした。重いモデルか、混雑している可能性があります。速いモデル(Gemini 3.5 Flash-Lite、Claude Haiku 4.5など)を選んでください。',
@@ -168,15 +171,46 @@ export function withDetail(message, detail) {
   return d ? message + '(' + d + ')' : message;
 }
 
-// HTTPの状態番号から、エラーの種類を決める(Claude以外のサービス用)
-export function httpError(status, detail) {
+// 何ミリ秒後にやり直せばよいか。応答の見出し(retry-after)か、本文(GeminiのRetryInfo)から読む。分からなければ0
+export function retryAfterOf(headers, body) {
+  const header = headers && typeof headers.get === 'function' ? headers.get('retry-after') : null;
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+    const at = Date.parse(header);
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  }
+  const details = body && body.error && Array.isArray(body.error.details) ? body.error.details : [];
+  for (const d of details) {
+    const m = d && typeof d.retryDelay === 'string' && d.retryDelay.match(/^(\d+(?:\.\d+)?)s$/);
+    if (m) return Math.round(Number(m[1]) * 1000);
+  }
+  return 0;
+}
+
+// 待っても戻らない上限か(Geminiの1日の上限、OpenAIの残高不足など)
+export function isQuotaExhausted(body) {
+  const error = body && body.error;
+  if (!error) return false;
+  if (error.code === 'insufficient_quota' || error.type === 'insufficient_quota') return true;
+  const details = Array.isArray(error.details) ? error.details : [];
+  return details.some((d) => d && Array.isArray(d.violations)
+    && d.violations.some((v) => /PerDay/i.test(String((v && v.quotaId) || ''))));
+}
+
+// HTTPの状態番号から、エラーの種類を決める(Claude以外のサービス用)。
+// body: エラーの本文(読めたとき)、headers: 応答の見出し(読めたとき)
+export function httpError(status, detail, body, headers) {
   const text = String(detail || '');
   if (status === 401) return new AIError('auth', MESSAGES.auth);
   if (status === 400 && /api[ _-]?key/i.test(text)) return new AIError('auth', MESSAGES.auth);
   if (status === 403) return new AIError('permission', withDetail(MESSAGES.permission, text));
   if (status === 404) return new AIError('notfound', MESSAGES.notfound);
   if (status === 408) return new AIError('timeout', MESSAGES.timeout);
-  if (status === 429) return new AIError('ratelimit', MESSAGES.ratelimit);
+  if (status === 429) {
+    if (isQuotaExhausted(body)) return new AIError('quota', MESSAGES.quota);
+    return new AIError('ratelimit', MESSAGES.ratelimit, { retryAfterMs: retryAfterOf(headers, body) });
+  }
   if (status >= 500) return new AIError('server', MESSAGES.server);
   return new AIError('badrequest', withDetail(MESSAGES.badrequest, text));
 }
@@ -302,7 +336,7 @@ export async function fetchJson(url, { method = 'POST', headers = {}, body, time
   try { data = await res.json(); } catch (e) { data = null; }
   if (!res.ok) {
     const detail = data && (data.error && (data.error.message || data.error.status) || data.message);
-    throw httpError(res.status, detail);
+    throw httpError(res.status, detail, data, res.headers);
   }
   return data;
 }
