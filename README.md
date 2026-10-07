@@ -11,6 +11,9 @@
 | 場所 | 中身 |
 |---|---|
 | `prompter/` | アプリ本体(HTML/CSS/JavaScript、ビルド不要)。GitHub Pagesでは、このフォルダだけを公開 |
-| `tests/prompter/` | 単体テスト(`node --test tests/prompter/*.test.mjs`) |
+| `tests/prompter/` | 単体テスト(`npm test`) |
+| `tests/e2e/` | 通しテスト(ブラウザで画面を動かし、AIの応答は模擬する。`npx playwright test`) |
+| `package.json`・`playwright.config.js` | テストの道具の設定(アプリ本体には不要) |
 | `tools/build-anthropic-sdk.sh` | 同梱のClaude公式SDKを作り直すスクリプト |
-| `.github/workflows/pages.yml` | `main` への push で、`prompter/` をGitHub Pagesに公開 |
+| `.github/workflows/test.yml` | PRごとに、単体テストと通しテストを実行 |
+| `.github/workflows/pages.yml` | `main` への push で、テストが通ったときだけ `prompter/` をGitHub Pagesに公開 |

@@ -1,0 +1,14 @@
+{
+  "name": "prompter-dev",
+  "private": true,
+  "description": "プロンプターの開発用(テストの道具だけ。アプリ本体は prompter/ でビルド不要)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/prompter/*.test.mjs",
+    "test:e2e": "playwright test",
+    "serve": "node tests/e2e/serve.mjs prompter"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}
