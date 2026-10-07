@@ -3,6 +3,8 @@ import * as AI from './ai/index.js';
 import * as Backup from './backup.js';
 import * as Pacing from './pacing.js';
 import * as Recovery from './recovery.js';
+import * as Gate from './gate.js';
+import * as Jev from './ai/jev.js';
 import { parseSummary, todayString } from './ai/common.js';
 
 const $ = (s) => document.querySelector(s);
@@ -180,12 +182,14 @@ function loadSettings() {
   const s = Object.assign({
     provider: 'claude', models: {}, summaryModel: AI.PROVIDERS.gemini.defaultSummaryModel, baseUrl: '',
     rememberKey: true, aiEnabled: true, chat: 'claude', size: 'm', wake: true,
+    jev: false, jevLevel: Gate.DEFAULT_LEVEL, // 送る前の振り分け(Jev)
   }, saved);
   // 以前の版の設定(「AIに聞く」の行き先が ai に入っていた)を引き継ぐ
   if (saved.ai && !saved.chat && CHAT_SITES[saved.ai]) s.chat = saved.ai;
   delete s.ai;
   delete s.autoWiki;
   if (!AI.PROVIDERS[s.provider]) s.provider = 'claude';
+  if (!Object.prototype.hasOwnProperty.call(Gate.LEVELS, s.jevLevel)) s.jevLevel = Gate.DEFAULT_LEVEL;
   s.models = Object.assign(defaultModels(), s.models);
   // 版2: Geminiの既定を、応答の速いFlash-Liteに変えた(以前の既定のままなら切り替える)
   if ((saved.version || 1) < 2 && s.models.gemini === 'gemini-3.5-flash') s.models.gemini = 'gemini-3.5-flash-lite';
@@ -211,6 +215,8 @@ const state = {
   keys: store.get('pl_keys', {}), // AIサービスごとのAPIキー
   // interval: 送る間隔(上限にかかると広げる)、failures: 通信の失敗が続いた回数
   ai: { pending: [], timer: null, busy: false, halted: '', nextAt: 0, interval: Pacing.MIN_INTERVAL, failures: 0 },
+  // 送る前の振り分け(Jev)。止めた理由などのほかに、判定した回数・AIに送らなかった回数と、AIに送った英字の略語を持つ
+  jev: Object.assign(Gate.initialGate(), { judged: 0, skipped: 0, sentAcronyms: new Set() }),
   summaryBusy: 0,
   usage: {}, // この画面を開いてから使ったトークン(種類ごと)
   ui: 1, // 設定が変わってカードのボタンが変わるときに増やす
@@ -257,9 +263,11 @@ const aiReady = () => AI.isReady(aiConfig());
 const aiActive = () => aiReady() && state.settings.aiEnabled && !state.ai.halted;
 const isKnown = (term) => state.known.has(String(term).toLowerCase());
 const canSummary = () => AI.canSummarize(aiConfig());
+const jevReady = () => !!String(state.keys.jev || '').trim();
+const jevActive = () => !!state.settings.jev && jevReady() && !state.jev.halted;
 
 // ---------- 使ったトークン ----------
-const USAGE_KINDS = { analyze: '自動判定', explain: '詳しく', summary: '要点', test: '接続テスト' };
+const USAGE_KINDS = { analyze: '自動判定', gate: '振り分け(Jev)', explain: '詳しく', summary: '要点', test: '接続テスト' };
 const TALLY_KEYS = ['n', 'input', 'output', 'thinking', 'cached', 'searches'];
 const numberFormat = new Intl.NumberFormat('ja-JP');
 const fmt = (n) => numberFormat.format(Number(n) || 0);
@@ -454,7 +462,21 @@ async function flushAI() {
   const gen = state.gen;
   ai.busy = true;
   updateAiUi();
+  let sent = false;
   try {
+    // Jevが「知らない言葉も、気をつけたい点もなさそう」と判定した発言は、AIに送らない。
+    // AIに送って済んだときと同じく、前の失敗の表示(「約20秒待ってから再開します」など)は消す
+    if (!(await passesGate(batch))) {
+      if (gen === state.gen) setStatus(baseStatus());
+      return;
+    }
+    if (gen !== state.gen) return;
+    // 判定を待つ間に、AIがオフになったときは、送らずに簡易判定で拾う
+    if (!aiActive()) {
+      detectOffline(batch);
+      return;
+    }
+    sent = true;
     const result = await AI.analyze(aiConfig(), { context, utterance: batch.join('\n'), exclude: excludeList() }, {
       onUsage: (u) => recordUsage('analyze', u),
     });
@@ -470,12 +492,56 @@ async function flushAI() {
     handleAIError(e, batch);
   } finally {
     ai.busy = false;
-    ai.nextAt = Math.max(ai.nextAt, Date.now() + ai.interval);
+    // 送る間隔は、AIに送ったときだけ空ける
+    if (sent) ai.nextAt = Math.max(ai.nextAt, Date.now() + ai.interval);
     updateAiUi();
     renderFeed();
     renderTranscript();
     if (ai.pending.length) scheduleAI();
   }
+}
+
+// 送る前の振り分け。AIに送るなら true。
+// Jevを使わないとき・つながらないときも true(取りこぼさないように、振り分けずに送る)
+async function passesGate(batch) {
+  const jev = state.jev;
+  const text = batch.join('\n');
+  // まだAIに送っていない英字の略語があれば、Jevに聞かずに送る
+  const acronyms = Gate.acronymsIn(text);
+  const fresh = acronyms.some((t) => !jev.sentAcronyms.has(t) && !isKnown(t));
+  const send = fresh || !jevActive() || !Gate.canAsk(jev, Date.now()) || await askJev(text);
+  if (send) acronyms.forEach((t) => jev.sentAcronyms.add(t));
+  return send;
+}
+
+// Jevに聞く。AIに送るなら true(Jevで失敗したときも true)
+async function askJev(text) {
+  const jev = state.jev;
+  try {
+    const verdict = await Jev.judge(state.keys.jev, text, { onUsage: (u) => recordUsage('gate', u) });
+    const recovered = !!jev.trouble;
+    Object.assign(jev, Gate.afterSuccess(jev));
+    const send = Gate.wantsAI(verdict, state.settings.jevLevel);
+    jev.judged++;
+    if (!send) jev.skipped++;
+    if (recovered) setJevResult('');
+    renderUsage();
+    return send;
+  } catch (e) {
+    jevFailed(e);
+    return true;
+  }
+}
+
+// Jevで失敗したとき。止めたときと、つながらないのが続いたときに、1回だけ知らせる
+function jevFailed(e) {
+  const jev = state.jev;
+  const before = { halted: jev.halted, trouble: jev.trouble };
+  Object.assign(jev, Gate.afterFailure(jev, e, Date.now()));
+  if (jev.halted && !before.halted) toast('Jevを止めました(設定を確認してください)。振り分けずにAIに送ります');
+  else if (jev.trouble && !before.trouble) toast('Jevにつながらないため、振り分けずにAIに送っています');
+  renderJevState();
+  updateAiUi();
 }
 
 function handleAIError(e, batch) {
@@ -712,7 +778,7 @@ function updateAiUi() {
     b.textContent = (state.ai.busy ? 'AI確認中…' : 'AIオン') + '・' + meta.short;
     b.classList.add('is-on');
     if (state.ai.busy) b.classList.add('is-busy');
-    b.title = meta.label + 'に、文字起こしの直近の文を送っています。押すとオフにします。';
+    b.title = meta.label + 'に、文字起こしの直近の文を送っています。' + (jevActive() ? '送る前に、Jevで振り分けています。' : '') + '押すとオフにします。';
   } else {
     b.textContent = 'AIオフ';
     b.classList.add('is-off');
@@ -788,12 +854,14 @@ function renderUsage() {
   const appearing = chip.hidden && tokens > 0;
   chip.hidden = tokens === 0;
   $('.live-status').classList.toggle('has-usage', tokens > 0);
-  if (tokens > 0) chip.title = 'この画面を開いてから使ったトークン: ' + tokenText(total) + '。押すと内訳を出します';
+  if (tokens > 0) chip.title = 'この画面を開いてから使ったトークン: ' + tokenText(total) + '。' + (gateText() ? gateText() + '。' : '') + '押すと内訳を出します';
   if (appearing) play(chip, [{ opacity: 0, transform: 'scale(.85)' }, { opacity: 1, transform: 'none' }], { duration: 380 });
   countTo($('#usageValue'), tokens);
 
   // 設定画面の表
-  $('#usageSession').replaceChildren(...(rows.length ? usageBlock('種類', rows, total) : [el('p', 'note', 'まだ使っていません。')]));
+  const session = rows.length ? usageBlock('種類', rows, total) : [el('p', 'note', 'まだ使っていません。')];
+  if (gateText()) session.push(el('p', 'note gate-stats', gateText() + '。'));
+  $('#usageSession').replaceChildren(...session);
   const today = loadTodayUsage();
   const models = Object.values(today.models)
     .filter((m) => m && Number(m.n) > 0)
@@ -803,6 +871,12 @@ function renderUsage() {
   const modelRows = models.map((m) => [String(m.model || '不明') + (m.provider === 'compatible' ? '(互換AI)' : ''), m]);
   const modelTotal = models.reduce((sum, m) => addTally(sum, m), emptyTally());
   $('#usageToday').replaceChildren(...(models.length ? usageBlock('モデル', modelRows, modelTotal) : [el('p', 'note', 'まだ使っていません。')]));
+}
+
+// 例: 「Jevの振り分けで、AIに送らずに済んだ発言: 7回(判定 12回のうち)」
+function gateText() {
+  const { judged, skipped } = state.jev;
+  return judged ? 'Jevの振り分けで、AIに送らずに済んだ発言: ' + fmt(skipped) + '回(判定 ' + fmt(judged) + '回のうち)' : '';
 }
 
 function showUsageDetail() {
@@ -1511,6 +1585,7 @@ function clearScreen() {
   state.cards = [];
   state.marks = [];
   state.shownTerms = [];
+  state.jev.sentAcronyms.clear();
   state.seen.clear();
   setStatus(baseStatus());
   // たくさんのカードは、1枚ずつではなく、まとめて薄くして消す
@@ -1618,6 +1693,11 @@ function renderSettings() {
     select.value = state.settings.summaryModel;
   }
 
+  $('#jevEnabled').checked = !!state.settings.jev;
+  $('#jevKeyInput').value = state.keys.jev || '';
+  $('#jevLevel').value = state.settings.jevLevel;
+  renderJevState();
+
   $('#chatSelect').value = state.settings.chat;
   $('#sizeSelect').value = state.settings.size;
   $('#wakeLock').checked = !!state.settings.wake;
@@ -1627,6 +1707,52 @@ function setTestResult(text, kind) {
   const r = $('#testResult');
   r.textContent = text;
   r.className = 'test-result' + (kind ? ' is-' + kind : '');
+}
+
+function setJevResult(text, kind) {
+  const r = $('#jevResult');
+  r.textContent = text;
+  r.className = 'test-result' + (kind ? ' is-' + kind : '');
+}
+
+// Jevを止めているとき・つながらないときは、その理由を出す
+function renderJevState() {
+  const jev = state.jev;
+  if (jev.halted) {
+    setJevResult('Jevを止めています。' + jev.halted + ' いまは振り分けずに、すべてAIに送っています。キーを直すか、「Jev接続テスト」が通ると再開します。', 'error');
+  } else if (jev.trouble) {
+    setJevResult('Jevにつながりません。' + jev.trouble + ' いまは振り分けずにAIに送り、ときどき試しています。', 'warn');
+  }
+}
+
+// Jevの設定が変わったら、止めた記録を消して、最初から試す
+function onJevSettingChanged() {
+  Object.assign(state.jev, Gate.initialGate());
+  setJevResult('');
+  updateAiUi();
+}
+
+const percent = (p) => Math.round(p * 100) + '%';
+
+async function runJevTest() {
+  const btn = $('#jevTestBtn');
+  btn.disabled = true;
+  setJevResult('確認しています…');
+  try {
+    const { samples, ms, usage } = await Jev.testConnection(state.keys.jev, { onUsage: (u) => recordUsage('test', u) });
+    Object.assign(state.jev, Gate.initialGate());
+    const level = state.settings.jevLevel;
+    // 例文ごとに1行: 「…」知らない言葉 93%・気をつけたい点 71% → AIに送ります
+    const lines = samples.map(({ text, verdict }) => '「' + text + '」知らない言葉 ' + percent(verdict.terms)
+      + '・気をつけたい点 ' + percent(verdict.risks) + ' → ' + (Gate.wantsAI(verdict, level) ? 'AIに送ります' : 'AIに送りません'));
+    const used = usage ? describeUsage(usage) + '。' : '';
+    setJevResult(['つながりました(' + (ms / 1000).toFixed(1) + '秒)。', ...lines, used].filter(Boolean).join('\n'), 'ok');
+  } catch (e) {
+    setJevResult((e && e.message) || 'Jevに接続できませんでした。', 'error');
+  } finally {
+    btn.disabled = false;
+    updateAiUi();
+  }
 }
 
 function onAiSettingChanged() {
@@ -1810,6 +1936,39 @@ function bind() {
     renderSettings();
     onAiSettingChanged();
     toast('APIキーを削除しました');
+  });
+
+  // 送る前の振り分け(Jev)
+  $('#jevEnabled').addEventListener('change', (e) => {
+    state.settings.jev = e.target.checked;
+    persistSettings();
+    onJevSettingChanged();
+    if (!e.target.checked) toast('Jevの振り分けをオフにしました');
+    else if (jevReady()) toast('Jevで振り分けてから、AIに送ります');
+    else toast('TypeSafeのAPIキーを入れると、振り分けを始めます');
+  });
+  $('#jevKeyInput').addEventListener('input', (e) => {
+    state.keys.jev = e.target.value.trim();
+    persistKeys();
+    onJevSettingChanged();
+  });
+  $('#jevKeyShowBtn').addEventListener('click', () => {
+    const input = $('#jevKeyInput');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    $('#jevKeyShowBtn').textContent = show ? '隠す' : '表示';
+  });
+  $('#jevLevel').addEventListener('change', (e) => {
+    state.settings.jevLevel = e.target.value;
+    persistSettings();
+  });
+  $('#jevTestBtn').addEventListener('click', runJevTest);
+  $('#jevKeyClearBtn').addEventListener('click', () => {
+    state.keys.jev = '';
+    persistKeys();
+    $('#jevKeyInput').value = '';
+    onJevSettingChanged();
+    toast('TypeSafeのAPIキーを削除しました');
   });
 
   // そのほかの設定

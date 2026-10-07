@@ -26,13 +26,13 @@ export const test = base.extend({
 
 export { expect };
 
-// AIサービスとキーを設定してから、読み込み直す
-export async function useProvider(page, provider, key, extra = {}) {
+// AIサービスとキーを設定してから、読み込み直す(keys: ほかのキー。JevのキーはTypeSafeの jev)
+export async function useProvider(page, provider, key, extra = {}, keys = {}) {
   await page.goto('index.html');
-  await page.evaluate(({ provider, key, extra }) => {
+  await page.evaluate(({ provider, key, extra, keys }) => {
     localStorage.setItem('pl_settings', JSON.stringify({ version: 3, provider, aiEnabled: true, rememberKey: true, ...extra }));
-    localStorage.setItem('pl_keys', JSON.stringify({ [provider]: key }));
-  }, { provider, key, extra });
+    localStorage.setItem('pl_keys', JSON.stringify({ [provider]: key, ...keys }));
+  }, { provider, key, extra, keys });
   await page.reload();
 }
 

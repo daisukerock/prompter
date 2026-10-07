@@ -1,4 +1,4 @@
-// AIサービス(Claude・ChatGPT・Gemini)の応答を模擬する。実際には通信しない。
+// AIサービス(Claude・ChatGPT・Gemini)と、Jev(TypeSafe)の応答を模擬する。実際には通信しない。
 // 発言に含まれる語を、決まった意味で返し、使ったトークン数も添える
 export const MEANINGS = {
   EBPM: ['証拠に基づく政策立案', 'データなどの根拠を政策に生かす考え方'],
@@ -30,6 +30,12 @@ export function analyzeFake(userText) {
   const due = utter.match(/今週中|来月末/);
   if (due) risks.push({ label: '期限の確認', level: 'yellow', tip: '期限と担当を、その場で確認する', quote: due[0] });
   return { terms, risks };
+}
+
+// Jevの判定: AIの模擬が何かを見つける発言なら、高い確率を返す
+export function jevFake(text) {
+  const found = analyzeFake('<utterance>\n' + text + '\n</utterance>\n<exclude>なし</exclude>');
+  return { terms: found.terms.length ? 0.94 : 0.03, risks: found.risks.length ? 0.88 : 0.05 };
 }
 
 const explainFake = (text) => ((text.match(/言葉: (.+)/) || [])[1] || 'この言葉') + 'は、会議でよく使う言葉です。ここでは、目標の達成度を測る数値を指します。';
@@ -68,11 +74,14 @@ function summaryChunks() {
 // opts.summaryFailFirst: 要点の1回目を、混雑(503)で失敗させる
 // opts.claudeStatus: Claudeへの送信を、この状態番号で失敗させる
 // opts.geminiFail: Geminiの自動判定を、前から順にこの応答で失敗させる([{ status, body }] か [{ abort: true }])
+// opts.jev: Jevの判定(発言 → { terms, risks })。既定は jevFake
+// opts.jevFail: Jevを、前から順にこの応答で失敗させる([{ status, body }] か [{ abort: true }]。
+//   ブラウザからの接続が許可されていないとき(CORS)も、ページからは abort と同じエラーに見える)
 export async function mockAI(page, opts = {}) {
   const log = [];
-  const state = { summaryFailed: false, geminiFail: (opts.geminiFail || []).slice() };
+  const state = { summaryFailed: false, geminiFail: (opts.geminiFail || []).slice(), jevFail: (opts.jevFail || []).slice() };
   const geminiUsage = opts.geminiUsage || { promptTokenCount: 800, candidatesTokenCount: 50, totalTokenCount: 850 };
-  await page.route(/https:\/\/(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com)\/.*/, async (route) => {
+  await page.route(/https:\/\/(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com|api\.typesafe\.ai)\/.*/, async (route) => {
     const req = route.request();
     const cors = {
       'access-control-allow-origin': '*',
@@ -112,6 +121,18 @@ export async function mockAI(page, opts = {}) {
       const user = body.messages[1].content;
       const content = body.response_format ? JSON.stringify(analyzeFake(user)) : explainFake(user);
       return reply(200, { choices: [{ message: { content }, finish_reason: 'stop' }] });
+    }
+
+    if (url.includes('api.typesafe.ai')) {
+      const fail = state.jevFail.shift();
+      if (fail && fail.abort) return route.abort('failed');
+      if (fail) return reply(fail.status, fail.body);
+      const verdict = (opts.jev || jevFake)(body.state);
+      return reply(200, {
+        model: 'jev-1.13.0',
+        answers: { terms: { type: 'noul', noul: verdict.terms }, risks: { type: 'noul', noul: verdict.risks } },
+        usage: { input_tokens: 150, output_tokens: 2 },
+      });
     }
 
     if (url.includes(':streamGenerateContent')) {
