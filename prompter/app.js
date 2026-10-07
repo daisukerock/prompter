@@ -64,6 +64,19 @@ const store = {
   },
 };
 
+// このタブの間だけ残す保存場所(読み込み直しても残り、タブを閉じると消える)
+const tabStore = {
+  get(key, fallback) {
+    try {
+      const v = sessionStorage.getItem(key);
+      return v ? JSON.parse(v) : fallback;
+    } catch (e) { return fallback; }
+  },
+  set(key, value) {
+    try { sessionStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* 無視 */ }
+  },
+};
+
 // ---------- 動き ----------
 const reduceMotion = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
 const wideQuery = window.matchMedia ? window.matchMedia('(min-width: 760px)') : null;
@@ -212,7 +225,7 @@ const state = {
   saved: store.get('pl_saved', []).map((c) => Object.assign({ v: 1 }, c)),
   known: new Set(store.get('pl_known', [])),
   settings: loadSettings(),
-  keys: store.get('pl_keys', {}), // AIサービスごとのAPIキー
+  keys: {}, // AIサービスごとのAPIキー(JevのキーはTypeSafeの jev)。すぐ下の loadKeys で読む
   // interval: 送る間隔(上限にかかると広げる)、failures: 通信の失敗が続いた回数
   ai: { pending: [], timer: null, busy: false, halted: '', nextAt: 0, interval: Pacing.MIN_INTERVAL, failures: 0 },
   // 送る前の振り分け(Jev)。止めた理由などのほかに、判定した回数・AIに送らなかった回数と、AIに送った英字の略語を持つ
@@ -224,11 +237,24 @@ const state = {
   transcriptOpen: false,
 };
 
+state.keys = loadKeys(state.settings.rememberKey);
+
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const persistSaved = () => store.set('pl_saved', Backup.compactSaved(state.saved, Date.now(), SUMMARY_FRESH_MS));
 const persistKnown = () => store.set('pl_known', [...state.known]);
 const persistSettings = () => store.set('pl_settings', state.settings);
+// APIキーは、読み込み直しても消えないように、いつもこのタブにも控えておく。
+// 「この端末に保存する」がオンなら端末にも保存し、オフなら、タブを閉じたときに消える
+function loadKeys(remember) {
+  const asKeys = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
+  const tab = asKeys(tabStore.get('pl_keys', null));
+  if (!remember) return tab;
+  // 端末に保存したキーを優先し、端末に保存できなかったキー(保存領域がいっぱい、など)は、このタブの控えで補う
+  return Object.assign({}, tab, asKeys(store.get('pl_keys', null)));
+}
+
 function persistKeys() {
+  tabStore.set('pl_keys', state.keys);
   if (state.settings.rememberKey) store.set('pl_keys', state.keys);
   else store.remove('pl_keys');
 }
@@ -1910,7 +1936,7 @@ function bind() {
     state.settings.rememberKey = e.target.checked;
     persistSettings();
     persistKeys();
-    toast(e.target.checked ? 'APIキーを、この端末に保存します' : 'APIキーは、画面を閉じると消えます');
+    toast(e.target.checked ? 'APIキーを、この端末に保存します' : 'APIキーは、このタブを閉じると消えます(読み込み直しても残ります)');
   });
   $('#modelInput').addEventListener('change', (e) => {
     state.settings.models[state.settings.provider] = e.target.value.trim();
