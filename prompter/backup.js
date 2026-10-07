@@ -87,6 +87,8 @@ export function cleanCard(raw, { now, freshMs, makeId }) {
     body: text(raw.body, 2000),
     quote: text(raw.quote, 1000),
     level: kind === 'risk' ? (raw.level === 'red' ? 'red' : 'yellow') : 'term',
+    novel: kind === 'term' && raw.novel === true,
+    unsure: kind === 'term' && raw.unsure === true,
     detail: raw.detail && typeof raw.detail.text === 'string' && !raw.detail.loading
       ? { text: text(raw.detail.text, 4000), error: !!raw.detail.error }
       : null,

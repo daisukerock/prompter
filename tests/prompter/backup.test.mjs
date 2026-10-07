@@ -31,12 +31,12 @@ test('書き出す中身: 保存カードと「知っている」語だけ。API
 });
 
 test('書き出して読み込むと、同じカードに戻る(idは付け直す)', () => {
-  const original = card({ detail: { text: '詳しい説明' }, status: 'studied', memo: 'メモ' });
+  const original = card({ detail: { text: '詳しい説明' }, status: 'studied', memo: 'メモ', novel: true, unsure: true });
   const back = parseBackup(JSON.stringify(makeBackup({ saved: [original], known: ['nda'] })), opts);
   assert.equal(back.cards.length, 1);
   const c = back.cards[0];
   assert.notEqual(c.id, original.id);
-  for (const k of ['key', 'kind', 'term', 'title', 'sub', 'body', 'quote', 'level', 'ts', 'status', 'memo']) assert.equal(c[k], original[k], k);
+  for (const k of ['key', 'kind', 'term', 'title', 'sub', 'body', 'quote', 'level', 'ts', 'status', 'memo', 'novel', 'unsure']) assert.equal(c[k], original[k], k);
   assert.deepEqual(c.detail, { text: '詳しい説明', error: false });
   assert.deepEqual(back.known, ['nda']);
 });
