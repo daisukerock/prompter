@@ -10,12 +10,14 @@ export const test = base.extend({
   allowedErrors: [[], { option: true }],
   problems: [async ({ page, allowedErrors }, use) => {
     const problems = [];
-    page.on('pageerror', (e) => problems.push('pageerror: ' + e.message));
+    const allowed = (text) => SANDBOX_NOTICE.test(text) || allowedErrors.some((re) => re.test(text));
+    page.on('pageerror', (e) => {
+      if (!allowed(e.message)) problems.push('pageerror: ' + e.message);
+    });
     page.on('console', (m) => {
       const text = m.text();
       if (m.type() !== 'error' && !/Content Security Policy|Refused to/.test(text)) return;
-      if (SANDBOX_NOTICE.test(text) || allowedErrors.some((re) => re.test(text))) return;
-      problems.push('console: ' + text);
+      if (!allowed(text)) problems.push('console: ' + text);
     });
     await use(problems);
     expect(problems, 'コンソールのエラーやCSP違反がないこと').toEqual([]);

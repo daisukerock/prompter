@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
+<meta name="app-version" content="dev">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#f4f6fa" media="(prefers-color-scheme: light)">
@@ -13,6 +14,7 @@
 <link rel="icon" href="data:,">
 <title>プロンプター</title>
 <link rel="stylesheet" href="style.css">
+<script src="boot.js"></script>
 </head>
 <body>
 <div class="app">
@@ -244,6 +246,7 @@
               <button id="resetAll" class="pill danger" type="button">保存カードをすべて削除</button>
             </div>
           </div>
+          <p class="note app-version" id="appVersion"></p>
         </section>
       </div>
     </section>
@@ -285,6 +288,15 @@
 </section>
 
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<!-- 起動できなかったときの案内(boot.js が出す) -->
+<div id="bootError" class="boot-error" role="alert" hidden>
+  <div class="boot-card">
+    <p class="boot-title">うまく起動できませんでした</p>
+    <p>アプリが新しくなった直後は、古いファイルが残っていて起動できないことがあります。読み込み直してください。直らないときは、少し待ってから、もう一度お試しください。</p>
+    <button id="bootReload" class="pill primary" type="button">読み込み直す</button>
+  </div>
+</div>
 
 <script type="module" src="app.js"></script>
 </body>

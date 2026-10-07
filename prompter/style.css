@@ -430,6 +430,13 @@ ul.note { padding-left: 1.2em; }
 .sheet-foot { display: flex; align-items: center; gap: 8px; padding: 10px 20px 12px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .spacer { flex: 1; }
 
+/* 起動できなかったときの案内(boot.js) */
+.boot-error { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 24px; background: rgba(6, 10, 18, .5); }
+.boot-card { max-width: 420px; padding: 20px 22px; border-radius: var(--radius); background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.boot-card p { margin: 0 0 12px; font-size: .95rem; }
+.boot-card .boot-title { font-weight: 800; font-size: 1.05rem; }
+.app-version { text-align: center; }
+
 .toast {
   position: fixed; z-index: 60; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom));
   transform: translate(-50%, 16px) scale(.98); opacity: 0; pointer-events: none;

@@ -3,7 +3,7 @@ name: Deploy prompter to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: ['prompter/**', '.github/workflows/pages.yml']
+    paths: ['prompter/**', 'tools/stamp-version.mjs', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -28,9 +28,15 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # 読み込み先のURLに版を付ける(更新の直後に、古いファイルと新しいファイルが混ざらないように)
+      - name: Stamp the version
+        run: node tools/stamp-version.mjs prompter _site "${GITHUB_SHA::8}"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: prompter
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
