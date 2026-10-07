@@ -2,6 +2,7 @@ import * as Detect from './detect.js';
 import * as AI from './ai/index.js';
 import * as Backup from './backup.js';
 import * as Pacing from './pacing.js';
+import * as Recovery from './recovery.js';
 import { parseSummary, todayString } from './ai/common.js';
 
 const $ = (s) => document.querySelector(s);
@@ -241,6 +242,7 @@ function setStatus(msg, warn) {
 }
 
 function baseStatus() {
+  if (state.listening && listen.shown === 'starting') return 'マイクを準備しています…(許可を求められたら「許可」を押してください)';
   if (state.listening) return '聞いています…(画面は点けたままにしてください)';
   if (state.demoTimer) return 'デモを再生中…';
   return '';
@@ -1279,6 +1281,20 @@ function bindSheetDrag() {
 
 // ---------- 聞き取り ----------
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+// 聞き取りの様子。running: 認識器が動いている / shown: 画面に出している状態
+// (off: 止めている、starting: マイクの準備中、on: 聞いている、recovering: 立て直し中)
+// troubleSince: すぐ止まるようになった時刻(0なら調子よし)
+const listen = {
+  running: false, shown: 'off', startedAt: 0, failures: 0, lastError: '', troubleSince: 0,
+  restartTimer: null, showTimer: null, healthyTimer: null,
+};
+const deadRecognizers = new WeakSet(); // 作り直して捨てた認識器(遅れて届く知らせは無視する)
+const LISTEN_LABEL = {
+  off: '聞き取り開始',
+  starting: 'マイクを準備しています…',
+  on: '聞いています(押すと停止)',
+  recovering: '立て直しています(押すと停止)',
+};
 
 async function requestWake() {
   if (!state.settings.wake || !('wakeLock' in navigator)) return;
@@ -1287,72 +1303,173 @@ async function requestWake() {
 function releaseWake() {
   if (state.wake) { state.wake.release().catch(() => {}); state.wake = null; }
 }
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && state.listening) requestWake();
-});
+
+// 画面に戻ったら、画面を点けたままにし直し、止まっていた聞き取りを立て直す
+function onPageVisible() {
+  if (document.visibilityState !== 'visible' || !state.listening) return;
+  requestWake();
+  if (!listen.running) openRecognizer();
+}
+document.addEventListener('visibilitychange', onPageVisible);
+window.addEventListener('pageshow', onPageVisible);
 
 function startListening() {
   if (!SR) {
     setStatus('このブラウザは、音声認識に対応していません。文字起こし欄の入力欄から試せます。', true);
     return;
   }
+  state.listening = true;
+  listen.failures = 0;
+  listen.lastError = '';
+  listen.troubleSince = 0;
+  setListenShown('starting');
+  setStatus(baseStatus());
+  openRecognizer();
+  requestWake();
+}
+
+// 認識器は使い回さず、毎回作り直す(止まったあとに使い回すと、動かないことがあるため)
+function openRecognizer() {
+  clearTimeout(listen.restartTimer);
+  closeRecognizer();
   const rec = new SR();
   rec.lang = 'ja-JP';
   rec.continuous = true;
   rec.interimResults = true;
+  rec.onstart = () => {
+    if (rec !== state.rec) return;
+    listen.running = true;
+    listen.startedAt = Date.now();
+    if (!listen.troubleSince) {
+      clearTimeout(listen.showTimer);
+      setListenShown('on');
+      setStatus(baseStatus());
+      return;
+    }
+    // すぐ止まるのが続いたあとは、始まっただけでは戻さない。しばらく動き続けたら(または聞こえたら)戻す
+    clearTimeout(listen.healthyTimer);
+    listen.healthyTimer = setTimeout(() => {
+      if (rec === state.rec && listen.running) markListenHealthy();
+    }, Recovery.HEALTHY_RUN_MS);
+  };
   rec.onresult = (ev) => {
+    if (deadRecognizers.has(rec)) return;
+    if (listen.troubleSince && rec === state.rec) markListenHealthy();
     let interim = '';
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
       const r = ev.results[i];
       if (r.isFinal) addFinalLine(r[0].transcript);
       else interim += r[0].transcript;
     }
-    state.interim = interim;
+    state.interim = state.listening ? interim : '';
     renderTranscript();
   };
   rec.onerror = (ev) => {
-    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+    if (rec !== state.rec) return;
+    listen.lastError = ev.error;
+    const fatal = Recovery.FATAL_ERRORS[ev.error];
+    if (fatal) {
       stopListening();
-      setStatus('マイクが許可されていません。ブラウザの設定で許可してください。', true);
-    } else if (ev.error !== 'no-speech' && ev.error !== 'aborted') {
-      setStatus('音声認識でエラーが出ました(' + ev.error + ')', true);
+      setStatus(fatal, true);
     }
+    // それ以外(無音・通信など)は、止まったあと(onend)に立て直す
   };
   rec.onend = () => {
-    if (!state.listening) return;
-    try {
-      rec.start();
-    } catch (e) {
-      stopListening();
-      setStatus('聞き取りが止まりました。もう一度「聞き取り開始」を押してください。', true);
-    }
+    if (rec !== state.rec) return;
+    state.rec = null;
+    listen.running = false;
+    if (state.listening) scheduleRestart();
   };
   state.rec = rec;
-  state.listening = true;
-  try { rec.start(); } catch (e) { /* すでに開始済み */ }
-  requestWake();
-  updateListenUi();
+  try {
+    rec.start();
+  } catch (e) {
+    state.rec = null;
+    scheduleRestart();
+  }
+}
+
+// 作り直すときに、前の認識器を捨てる
+function closeRecognizer() {
+  const rec = state.rec;
+  state.rec = null;
+  listen.running = false;
+  if (!rec) return;
+  deadRecognizers.add(rec);
+  try { rec.abort(); } catch (e) { /* 無視 */ }
+}
+
+// 止まった認識器を立て直す。普通の区切りならすぐ、すぐ止まるのが続くなら間をあける
+function scheduleRestart() {
+  const ran = listen.startedAt ? Date.now() - listen.startedAt : 0;
+  listen.startedAt = 0;
+  clearTimeout(listen.healthyTimer);
+  const next = Recovery.nextRestart(ran, listen.failures);
+  listen.failures = next.failures;
+  if (next.failures && !listen.troubleSince) listen.troubleSince = Date.now();
+  if (listen.shown === 'recovering') {
+    // すでに出しているなら、文だけ新しくする(失敗が続けば、強めの文になる)
+    setStatus(Recovery.recoveringMessage(listen.lastError, listen.failures), true);
+  } else {
+    // 立て直しが長引いたら(すぐ止まるのが続く、または始め直せない)、画面に出す。一瞬の区切りでは出さない
+    clearTimeout(listen.showTimer);
+    const since = listen.troubleSince || Date.now();
+    listen.showTimer = setTimeout(() => {
+      if (state.listening && (listen.troubleSince || !listen.running)) setListenShown('recovering');
+    }, Math.max(0, since + Recovery.SHOW_RECOVERING_MS - Date.now()));
+  }
+  clearTimeout(listen.restartTimer);
+  // 画面が隠れている間は立て直さない(画面に戻ったときに立て直す)
+  if (document.visibilityState === 'hidden') return;
+  listen.restartTimer = setTimeout(() => {
+    if (state.listening && !listen.running) openRecognizer();
+  }, next.delay);
+}
+
+// 調子が戻ったら、元の表示に戻す
+function markListenHealthy() {
+  listen.troubleSince = 0;
+  listen.failures = 0;
+  clearTimeout(listen.showTimer);
+  clearTimeout(listen.healthyTimer);
+  setListenShown('on');
   setStatus(baseStatus());
 }
 
 function stopListening() {
   state.listening = false;
-  if (state.rec) {
-    try { state.rec.stop(); } catch (e) { /* 無視 */ }
-    state.rec = null;
+  clearTimeout(listen.restartTimer);
+  clearTimeout(listen.showTimer);
+  clearTimeout(listen.healthyTimer);
+  listen.troubleSince = 0;
+  listen.running = false;
+  listen.startedAt = 0;
+  const rec = state.rec;
+  state.rec = null;
+  // 言いかけの最後の言葉は、受け取ってから終える(stop は、聞こえた分を確定してから止まる)
+  if (rec) {
+    try { rec.stop(); } catch (e) { /* 無視 */ }
   }
   releaseWake();
   state.interim = '';
-  updateListenUi();
+  setListenShown('off');
   setStatus(baseStatus());
   renderTranscript();
 }
 
+function setListenShown(shown) {
+  listen.shown = shown;
+  updateListenUi();
+  if (shown === 'recovering') setStatus(Recovery.recoveringMessage(listen.lastError, listen.failures), true);
+}
+
 function updateListenUi() {
+  const shown = state.listening ? listen.shown : 'off';
   const b = $('#listenBtn');
-  b.classList.toggle('is-live', state.listening);
+  b.classList.toggle('is-live', shown === 'on');
+  b.classList.toggle('is-recovering', shown === 'recovering');
   b.setAttribute('aria-pressed', String(state.listening));
-  $('#listenLabel').textContent = state.listening ? '聞いています(押すと停止)' : '聞き取り開始';
+  $('#listenLabel').textContent = LISTEN_LABEL[shown];
 }
 
 function runDemo() {
