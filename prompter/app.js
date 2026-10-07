@@ -199,7 +199,7 @@ function loadSettings() {
   const s = Object.assign({
     provider: 'claude', models: {}, summaryModel: AI.PROVIDERS.gemini.defaultSummaryModel, baseUrl: '',
     rememberKey: true, aiEnabled: true, chat: 'claude', size: 'm', wake: true,
-    jev: false, jevLevel: Gate.DEFAULT_LEVEL, // 送る前の振り分け(Jev)
+    jev: false, jevLevel: Gate.DEFAULT_LEVEL, jevRoute: Jev.DEFAULT_ROUTE, // 送る前の振り分け(Jev)
     stt: 'groq', sttModels: {}, sttHints: '', // 聞き取り(Whisper。キーがなければ、標準の聞き取り)
   }, saved);
   // 以前の版の設定(「AIに聞く」の行き先が ai に入っていた)を引き継ぐ
@@ -208,6 +208,7 @@ function loadSettings() {
   delete s.autoWiki;
   if (!AI.PROVIDERS[s.provider]) s.provider = 'claude';
   if (!Object.prototype.hasOwnProperty.call(Gate.LEVELS, s.jevLevel)) s.jevLevel = Gate.DEFAULT_LEVEL;
+  if (!Jev.jevRoute(s.jevRoute)) s.jevRoute = Jev.DEFAULT_ROUTE;
   if (s.stt !== 'browser' && !Whisper.sttProvider(s.stt)) s.stt = 'groq';
   s.sttModels = Object.assign(Object.fromEntries(Object.entries(Whisper.STT_PROVIDERS).map(([id, w]) => [id, w.defaultModel])), s.sttModels);
   if (typeof s.sttHints !== 'string') s.sttHints = '';
@@ -233,7 +234,7 @@ const state = {
   saved: store.get('pl_saved', []).map((c) => Object.assign({ v: 1 }, c)),
   known: new Set(store.get('pl_known', [])),
   settings: loadSettings(),
-  keys: {}, // AIサービスごとのAPIキー(JevのキーはTypeSafeの jev)。すぐ下の loadKeys で読む
+  keys: {}, // サービスごとのAPIキー(Jevのキーは、接続先ごとに openrouter・jev)。すぐ下の loadKeys で読む
   // interval: 送る間隔(上限にかかると広げる)、failures: 通信の失敗が続いた回数
   ai: { pending: [], timer: null, busy: false, halted: '', nextAt: 0, interval: Pacing.MIN_INTERVAL, failures: 0 },
   // 送る前の振り分け(Jev)。止めた理由などのほかに、判定した回数・AIに送らなかった回数と、AIに送った英字の略語を持つ
@@ -300,7 +301,10 @@ const aiReady = () => AI.isReady(aiConfig());
 const aiActive = () => aiReady() && state.settings.aiEnabled && !state.ai.halted;
 const isKnown = (term) => state.known.has(String(term).toLowerCase());
 const canSummary = () => AI.canSummarize(aiConfig());
-const jevReady = () => !!String(state.keys.jev || '').trim();
+// Jevの接続先と、そのキー
+const jevRouteNow = () => Jev.jevRoute(state.settings.jevRoute);
+const jevConfig = () => ({ route: state.settings.jevRoute, apiKey: state.keys[jevRouteNow().keyName] || '' });
+const jevReady = () => !!String(jevConfig().apiKey).trim();
 const jevActive = () => !!state.settings.jev && jevReady() && !state.jev.halted;
 
 // ---------- 使ったトークン ----------
@@ -555,7 +559,7 @@ async function passesGate(batch) {
 async function askJev(text) {
   const jev = state.jev;
   try {
-    const verdict = await Jev.judge(state.keys.jev, text, { onUsage: (u) => recordUsage('gate', u) });
+    const verdict = await Jev.judge(jevConfig(), text, { onUsage: (u) => recordUsage('gate', u) });
     const recovered = !!jev.trouble;
     Object.assign(jev, Gate.afterSuccess(jev));
     const send = Gate.wantsAI(verdict, state.settings.jevLevel);
@@ -1987,9 +1991,8 @@ function renderSettings() {
   renderSttSettings();
 
   $('#jevEnabled').checked = !!state.settings.jev;
-  $('#jevKeyInput').value = state.keys.jev || '';
   $('#jevLevel').value = state.settings.jevLevel;
-  renderJevState();
+  renderJevSettings();
 
   $('#chatSelect').value = state.settings.chat;
   $('#sizeSelect').value = state.settings.size;
@@ -2077,6 +2080,24 @@ async function runSttTest() {
   }
 }
 
+// Jevの接続先に合わせて、キーの欄と説明を切り替える
+function renderJevSettings() {
+  const r = jevRouteNow();
+  $('#jevRouteSelect').value = state.settings.jevRoute;
+  $('#jevKeyLabel').textContent = r.short + 'のAPIキー';
+  const key = $('#jevKeyInput');
+  key.value = state.keys[r.keyName] || '';
+  key.placeholder = r.keyHint;
+  const a = el('a', null, r.keySite);
+  a.href = r.keyUrl;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  $('#jevKeyNote').replaceChildren(document.createTextNode('キーは、'), a, document.createTextNode(state.settings.jevRoute === 'openrouter'
+    ? 'で作れます。OpenRouterは前払いなので、先に「Credits」でクレジットを購入してください。'
+    : 'の「API Keys」で作れます。'));
+  renderJevState();
+}
+
 function setJevResult(text, kind) {
   const r = $('#jevResult');
   r.textContent = text;
@@ -2107,7 +2128,7 @@ async function runJevTest() {
   btn.disabled = true;
   setJevResult('確認しています…');
   try {
-    const { samples, ms, usage } = await Jev.testConnection(state.keys.jev, { onUsage: (u) => recordUsage('test', u) });
+    const { samples, ms, usage } = await Jev.testConnection(jevConfig(), { onUsage: (u) => recordUsage('test', u) });
     Object.assign(state.jev, Gate.initialGate());
     const level = state.settings.jevLevel;
     // 例文ごとに1行: 「…」知らない言葉 93%・気をつけたい点 71% → AIに送ります
@@ -2353,10 +2374,16 @@ function bind() {
     onJevSettingChanged();
     if (!e.target.checked) toast('Jevの振り分けをオフにしました');
     else if (jevReady()) toast('Jevで振り分けてから、AIに送ります');
-    else toast('TypeSafeのAPIキーを入れると、振り分けを始めます');
+    else toast(jevRouteNow().short + 'のAPIキーを入れると、振り分けを始めます');
+  });
+  $('#jevRouteSelect').addEventListener('change', (e) => {
+    state.settings.jevRoute = e.target.value;
+    persistSettings();
+    onJevSettingChanged();
+    renderJevSettings();
   });
   $('#jevKeyInput').addEventListener('input', (e) => {
-    state.keys.jev = e.target.value.trim();
+    state.keys[jevRouteNow().keyName] = e.target.value.trim();
     persistKeys();
     onJevSettingChanged();
   });
@@ -2372,11 +2399,12 @@ function bind() {
   });
   $('#jevTestBtn').addEventListener('click', runJevTest);
   $('#jevKeyClearBtn').addEventListener('click', () => {
-    state.keys.jev = '';
+    const r = jevRouteNow();
+    state.keys[r.keyName] = '';
     persistKeys();
     $('#jevKeyInput').value = '';
     onJevSettingChanged();
-    toast('TypeSafeのAPIキーを削除しました');
+    toast(r.short + 'のAPIキーを削除しました');
   });
 
   // そのほかの設定

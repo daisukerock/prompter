@@ -9,7 +9,7 @@ async function enterKeys(page) {
   await page.click('.tab[data-view="settings"]');
   await page.selectOption('#providerSelect', 'gemini');
   await page.fill('#keyInput', 'AIza-typed');
-  await page.fill('#jevKeyInput', 'ts-typed');
+  await page.fill('#jevKeyInput', 'sk-or-typed');
 }
 
 async function shownKeys(page) {
@@ -20,11 +20,11 @@ async function shownKeys(page) {
 test('「この端末に保存する」がオンなら、読み込み直しても、開き直しても残る', async ({ page, context }) => {
   await enterKeys(page);
   await page.reload();
-  expect(await shownKeys(page)).toEqual({ ai: 'AIza-typed', jev: 'ts-typed' });
+  expect(await shownKeys(page)).toEqual({ ai: 'AIza-typed', jev: 'sk-or-typed' });
   // 別のタブで開いても残る
   const other = await context.newPage();
   await other.goto('index.html');
-  expect(await shownKeys(other)).toEqual({ ai: 'AIza-typed', jev: 'ts-typed' });
+  expect(await shownKeys(other)).toEqual({ ai: 'AIza-typed', jev: 'sk-or-typed' });
 });
 
 test('オフでも、読み込み直しでは消えない。タブを閉じると消える(端末には残さない)', async ({ page, context }) => {
@@ -35,7 +35,7 @@ test('オフでも、読み込み直しでは消えない。タブを閉じる�
 
   await page.reload();
   await expect(page.locator('#rememberKey')).not.toBeChecked();
-  expect(await shownKeys(page)).toEqual({ ai: 'AIza-typed', jev: 'ts-typed' });
+  expect(await shownKeys(page)).toEqual({ ai: 'AIza-typed', jev: 'sk-or-typed' });
   // 読み込み直したあとに入れ直しても、端末には残さない
   await page.fill('#keyInput', 'AIza-changed');
   expect(await page.evaluate(() => localStorage.getItem('pl_keys'))).toBeNull();
@@ -61,7 +61,7 @@ test.describe('端末に保存できないとき', () => {
     await expect(page.locator('#storageBanner')).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem('pl_keys'))).toBeNull();
     await page.reload();
-    expect(await shownKeys(page)).toEqual({ ai: 'AIza-typed', jev: 'ts-typed' });
+    expect(await shownKeys(page)).toEqual({ ai: 'AIza-typed', jev: 'sk-or-typed' });
   });
 });
 

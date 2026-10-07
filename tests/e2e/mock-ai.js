@@ -1,4 +1,4 @@
-// AIサービス(Claude・ChatGPT・Gemini)と、Jev(TypeSafe)、Whisper(Groq・OpenAI)の応答を模擬する。実際には通信しない。
+// AIサービス(Claude・ChatGPT・Gemini)と、Jev(OpenRouter経由・TypeSafe)、Whisper(Groq・OpenAI)の応答を模擬する。実際には通信しない。
 // 発言に含まれる語を、決まった意味で返し、使ったトークン数も添える
 export const MEANINGS = {
   EBPM: ['証拠に基づく政策立案', 'データなどの根拠を政策に生かす考え方'],
@@ -101,7 +101,7 @@ export async function mockAI(page, opts = {}) {
   const state = { summaryFailed: false, geminiFail: (opts.geminiFail || []).slice(), jevFail: (opts.jevFail || []).slice() };
   const geminiUsage = opts.geminiUsage || { promptTokenCount: 800, candidatesTokenCount: 50, totalTokenCount: 850 };
   let whisperCalls = 0;
-  await page.route(/https:\/\/(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com|api\.typesafe\.ai|api\.groq\.com)\/.*/, async (route) => {
+  await page.route(/https:\/\/(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com|api\.typesafe\.ai|openrouter\.ai|api\.groq\.com)\/.*/, async (route) => {
     const req = route.request();
     const cors = {
       'access-control-allow-origin': '*',
@@ -151,13 +151,14 @@ export async function mockAI(page, opts = {}) {
       return reply(200, { choices: [{ message: { content }, finish_reason: 'stop' }] });
     }
 
-    if (url.includes('api.typesafe.ai')) {
+    // Jev(OpenRouterも、TypeSafeと同じ形で返す。モデル名だけ、OpenRouterの呼び方になる)
+    if (url.includes('/systemone')) {
       const fail = state.jevFail.shift();
       if (fail && fail.abort) return route.abort('failed');
       if (fail) return reply(fail.status, fail.body);
       const verdict = (opts.jev || jevFake)(body.state);
       return reply(200, {
-        model: 'jev-1.13.0',
+        model: url.includes('openrouter.ai') ? 'typesafe/jev-1.13' : 'jev-1.13.0',
         answers: { terms: { type: 'noul', noul: verdict.terms }, risks: { type: 'noul', noul: verdict.risks } },
         usage: { input_tokens: 150, output_tokens: 2 },
       });

@@ -26,7 +26,7 @@ export const test = base.extend({
 
 export { expect };
 
-// AIサービスとキーを設定してから、読み込み直す(keys: ほかのキー。JevのキーはTypeSafeの jev)
+// AIサービスとキーを設定してから、読み込み直す(keys: ほかのキー。Jevのキーは、OpenRouter経由なら openrouter、TypeSafeなら jev)
 export async function useProvider(page, provider, key, extra = {}, keys = {}) {
   await page.goto('index.html');
   await page.evaluate(({ provider, key, extra, keys }) => {

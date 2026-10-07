@@ -174,7 +174,7 @@
             <ul class="note">
               <li>AIがオンの間は、文字起こしの直近の数文と、すでに出た語の一覧が、選んだAIサービスに送られます。音声そのものは送りません。</li>
               <li>「要点」を押すと、その言葉と、出てきた一文が送られます。</li>
-              <li>下の「送る前の振り分け(Jev)」をオンにすると、新しい発言の文字起こしが、TypeSafe(Jev)にも送られます。</li>
+              <li>下の「送る前の振り分け(Jev)」をオンにすると、新しい発言の文字起こしが、Jev(OpenRouter経由か、TypeSafe)にも送られます。</li>
               <li>APIキーは、この端末のブラウザの中だけに保存します。読み込み直しても消えません。ほかの人が使う端末では、「この端末に保存する」をオフにし、使い終わったら「このAPIキーを削除」を押してください。</li>
               <li>iPhoneでは、ホーム画面に追加したアプリと、Safariの画面とで、保存場所が別です。キーは、使う方で入れてください。アプリの中で開いた画面(LINEなどのアプリ内ブラウザ)では、閉じると消えることがあります。</li>
               <li>料金は、各AIサービスの従量課金です。サービスの管理画面で、利用上限を設定しておくと安心です。</li>
@@ -245,12 +245,21 @@
           </div>
 
           <div class="setting">
-            <label for="jevKeyInput">TypeSafeのAPIキー</label>
+            <label for="jevRouteSelect">接続先</label>
+            <select id="jevRouteSelect">
+              <option value="openrouter">OpenRouter経由(おすすめ)</option>
+              <option value="typesafe">TypeSafe(直接)</option>
+            </select>
+            <p class="note">TypeSafe(Jevの提供元)のAPIは、ブラウザ(このアプリ)からの直接の接続を受け付けていないようです。iPhoneなどで使うときは、OpenRouter経由にしてください。送る内容と、返ってくる判定は同じです。</p>
+          </div>
+
+          <div class="setting">
+            <label for="jevKeyInput" id="jevKeyLabel">APIキー</label>
             <div class="row-inline">
-              <input id="jevKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="TypeSafeのAPIキー">
+              <input id="jevKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="">
               <button id="jevKeyShowBtn" class="pill" type="button">表示</button>
             </div>
-            <p class="note">キーは、<a href="https://console.typesafe.ai/" target="_blank" rel="noopener noreferrer">TypeSafeのコンソール</a>の「API Keys」で作れます。AIのAPIキーと同じく、この端末のブラウザの中だけに保存します(上の「この端末に保存する」に従います)。</p>
+            <p class="note"><span id="jevKeyNote"></span>AIのAPIキーと同じく、この端末のブラウザの中だけに保存します(上の「この端末に保存する」に従います)。</p>
           </div>
 
           <div class="setting">
@@ -276,8 +285,8 @@
               <li>AIがオンのときだけ使います。「詳しく」と「要点」は、振り分けずにAIに送ります。</li>
               <li>まだAIに送っていない英字の略語があるときは、Jevに聞かずにAIに送ります。</li>
               <li>Jevにつながらないときや、エラーのときは、振り分けずにAIに送ります(取りこぼさないように)。キーの誤りなどのときは、Jevを止めて知らせます。</li>
-              <li>オンの間は、新しい発言の文字起こしが、TypeSafeにも送られます(音声そのものは送りません)。組織の会議で使う場合は、組織のルールも確認してください。</li>
-              <li>料金は、TypeSafeの従量課金です(入力のトークン数で決まります)。送らずに済んだ回数と、使ったトークンは、下の「使ったトークン」で確かめられます。</li>
+              <li>オンの間は、新しい発言の文字起こしが、Jevに送られます(OpenRouter経由なら、OpenRouterを通ってTypeSafeに届きます。音声そのものは送りません)。組織の会議で使う場合は、組織のルールも確認してください。</li>
+              <li>料金は、入力のトークン数で決まる従量課金です。OpenRouter経由なら、入力100万トークンあたり約0.042ドルで、出力は無料です(2026年10月時点の目安。変わることがあります)。送らずに済んだ回数と、使ったトークンは、下の「使ったトークン」で確かめられます。</li>
             </ul>
           </div>
         </section>
