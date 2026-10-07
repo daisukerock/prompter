@@ -312,10 +312,18 @@ function recordUsage(kind, usage) {
 }
 
 // ---------- カードの作成 ----------
+// 意味に自信がない語は、分かっていることだけを出し、確かめ方を添える
+function unsureHint() {
+  return canSummary()
+    ? '意味は、まだはっきりしません。「要点」で、Google検索して確かめられます。'
+    : '意味は、まだはっきりしません。「詳しく」で聞くか、あとで確かめてください。';
+}
+
 function aiTermCard(t, lines) {
   return {
     id: uid(), kind: 'term', key: 't:' + t.term.toLowerCase(), term: t.term,
-    title: t.term, sub: t.full, body: t.meaning, quote: Detect.lineContaining(lines, t.term), level: 'term',
+    title: t.term, sub: t.full, body: t.meaning || unsureHint(), quote: Detect.lineContaining(lines, t.term), level: 'term',
+    novel: !!t.novel, unsure: t.sure === false,
   };
 }
 
@@ -549,6 +557,9 @@ function fillCard(node, card, mode) {
   head.append(el('h3', 'card-title', card.title));
   if (card.sub) head.append(el('span', 'card-sub', card.sub));
   if (risk) head.append(el('span', 'card-tag', card.level === 'red' ? '要注意' : '確認'));
+  // まだ広く定着していない語・意味に自信がない語は、そのことが分かるようにする
+  if (!risk && card.novel) head.append(el('span', 'card-tag tag-new', '新しい言葉'));
+  if (!risk && card.unsure) head.append(el('span', 'card-tag tag-unsure', '意味は要確認'));
   if (mode === 'saved') {
     const st = card.status || 'new';
     head.append(el('span', 'status-pill st-' + st, STATUS_LABEL[st]));
@@ -815,7 +826,7 @@ function saveCard(card) {
   if (!exists) {
     state.saved.unshift({
       id: uid(), key: card.key, kind: card.kind, term: card.term, title: card.title, sub: card.sub,
-      body: card.body, quote: card.quote, level: card.level,
+      body: card.body, quote: card.quote, level: card.level, novel: !!card.novel, unsure: !!card.unsure,
       detail: card.detail && !card.detail.loading ? card.detail : null,
       summary: card.summary || null,
       ts: Date.now(), status: 'new', memo: '', v: 1,
@@ -919,7 +930,7 @@ function exportList() {
       ? '要点: ' + c.summary.items.map((i) => (i.label ? i.label + ': ' : '') + i.text).join(' / ')
       : '';
     return [
-      '■ ' + c.title + (c.sub ? '(' + c.sub + ')' : ''),
+      '■ ' + c.title + (c.sub ? '(' + c.sub + ')' : '') + (c.novel ? '[新しい言葉]' : '') + (c.unsure ? '[意味は要確認]' : ''),
       c.body,
       c.detail && !c.detail.error ? '詳しく: ' + c.detail.text : '',
       summary,
@@ -1658,7 +1669,7 @@ async function runTest() {
   try {
     const { result, ms, usage } = await AI.testConnection(aiConfig(), { onUsage: (u) => recordUsage('test', u) });
     state.ai.halted = '';
-    const terms = result.terms.map((t) => t.term + ':' + t.meaning).join(' / ');
+    const terms = result.terms.map((t) => t.term + ':' + (t.meaning || '(意味は要確認)')).join(' / ');
     const risks = result.risks.map((r) => r.label).join('・');
     const slow = ms > SLOW_TEST_MS;
     const used = usage ? describeUsage(usage) : '';

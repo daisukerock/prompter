@@ -225,6 +225,9 @@ svg { width: 1.25em; height: 1.25em; fill: none; stroke: currentColor; stroke-wi
 .card-tag { font-size: .74rem; font-weight: 800; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
 .risk-yellow .card-tag { background: var(--yellow); color: #1a1400; }
 .risk-red .card-tag { background: var(--red); color: #fff; }
+/* まだ広く定着していない語・意味に自信がない語 */
+.card-tag.tag-new { background: color-mix(in srgb, var(--accent-2) 16%, var(--surface)); color: var(--accent-2); }
+.card-tag.tag-unsure { background: var(--yellow-bg); color: var(--yellow); }
 .card-body { margin: 6px 0 0; font-size: 1.06rem; line-height: 1.7; white-space: pre-line; }
 .card-quote { margin: 8px 0 0; font-size: .84rem; color: var(--muted); border-left: 3px solid var(--line); padding-left: 9px; }
 .card-detail {

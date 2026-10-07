@@ -4,8 +4,13 @@ import assert from 'node:assert/strict';
 import * as AI from '../../prompter/ai/index.js';
 
 const RESULT = {
-  terms: [{ term: 'KPI', full: '重要業績評価指標', meaning: '目標の達成度を測る指標' }],
+  terms: [{ term: 'KPI', full: '重要業績評価指標', meaning: '目標の達成度を測る指標', kind: 'established', sure: true }],
   risks: [{ label: '期限の確認', level: 'yellow', tip: '期限と担当を確認する', quote: '来週までに' }],
+};
+// 画面に渡す形(新しい言葉か・意味に自信があるかを、そろえた形で持つ)
+const NORMALIZED = {
+  terms: [{ term: 'KPI', full: '重要業績評価指標', meaning: '目標の達成度を測る指標', novel: false, sure: true }],
+  risks: RESULT.risks,
 };
 
 let calls = [];
@@ -63,7 +68,7 @@ test('準備ができているかの判定', () => {
 test('Claude: 公式SDKで、構造化出力・effort・fallbacksを付けて送る', async () => {
   responder = () => json(200, claudeMessage(JSON.stringify(RESULT)));
   const out = await AI.analyze({ provider: 'claude', apiKey: 'sk-ant-test', model: 'claude-sonnet-5-5' }, input);
-  assert.deepEqual(out, RESULT);
+  assert.deepEqual(out, NORMALIZED);
   assert.equal(calls.length, 1);
   const c = calls[0];
   assert.equal(c.url, 'https://api.anthropic.com/v1/messages?beta=true');
@@ -97,7 +102,7 @@ test('Claude: effortなどを受け付けないと言われたら、外して1�
     ? json(400, { type: 'error', error: { type: 'invalid_request_error', message: 'output_config.effort: not supported' } })
     : json(200, claudeMessage(JSON.stringify(RESULT))));
   const out = await AI.analyze({ provider: 'claude', apiKey: 'k', model: 'claude-opus-5-5' }, input);
-  assert.deepEqual(out, RESULT);
+  assert.deepEqual(out, NORMALIZED);
   assert.equal(calls.length, 2);
   assert.equal(calls[1].body.output_config.effort, undefined);
   assert.equal(calls[1].body.fallbacks, undefined);
@@ -136,7 +141,7 @@ test('Claude: 詳しい説明と、モデル一覧', async () => {
 test('OpenAI: JSONモードと、考える量を指定して送る', async () => {
   responder = () => json(200, { choices: [{ message: { content: JSON.stringify(RESULT) }, finish_reason: 'stop' }] });
   const out = await AI.analyze({ provider: 'openai', apiKey: 'sk-test', model: 'gpt-5.6-luna' }, input);
-  assert.deepEqual(out, RESULT);
+  assert.deepEqual(out, NORMALIZED);
   const c = calls[0];
   assert.equal(c.url, 'https://api.openai.com/v1/chat/completions');
   assert.equal(c.headers.get('authorization'), 'Bearer sk-test');
@@ -180,7 +185,7 @@ test('Gemini: JSONの形と考える量を指定し、考えた過程は読ま�
     }],
   });
   const out = await AI.analyze({ provider: 'gemini', apiKey: 'AIza-test', model: 'models/gemini-3.5-flash' }, input);
-  assert.deepEqual(out, RESULT);
+  assert.deepEqual(out, NORMALIZED);
   const c = calls[0];
   assert.equal(c.url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent');
   assert.equal(c.headers.get('x-goog-api-key'), 'AIza-test');
@@ -309,7 +314,7 @@ test('使ったトークン数: Claudeはキャッシュから読んだ分も入
   }));
   const seen = [];
   const out = await AI.analyze({ provider: 'claude', apiKey: 'k', model: 'claude-sonnet-5-5' }, input, { onUsage: (u) => seen.push(u) });
-  assert.deepEqual(out, RESULT, '結果の形は変えない');
+  assert.deepEqual(out, NORMALIZED, '結果の形は変えない');
   assert.deepEqual(seen, [{ input: 912, output: 80, thinking: 30, cached: 900, searches: 0, provider: 'claude', model: 'claude-sonnet-5-5' }]);
 });
 
@@ -366,7 +371,7 @@ test('使ったトークン数: Geminiは考えた分も出力に数える。「
   assert.deepEqual(seen, [{ input: 850, output: 85, thinking: 25, cached: 600, searches: 0, provider: 'gemini', model: 'gemini-3.5-flash-lite' }]);
 
   const test = await AI.testConnection(cfg, { onUsage: (u) => seen.push(u) });
-  assert.deepEqual(test.result, RESULT);
+  assert.deepEqual(test.result, NORMALIZED);
   assert.equal(test.usage.input, 850);
   assert.equal(seen.length, 2);
 

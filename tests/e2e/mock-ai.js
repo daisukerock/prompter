@@ -10,13 +10,21 @@ export const MEANINGS = {
   'トランプ大統領の関税': ['', '米国大統領が輸入品に課す関税と、その政策'],
 };
 
+// まだ広く定着していない語(sure: 意味に自信があるか)
+export const NEW_WORDS = {
+  'パーパス経営': { full: '', meaning: '企業の存在意義を軸に据えた経営の考え方', sure: true },
+  'シン・業務改革': { full: '', meaning: '', sure: false },
+};
+
 export function analyzeFake(userText) {
   const utter = (userText.match(/<utterance>\n([\s\S]*?)\n<\/utterance>/) || [])[1] || '';
   const exclude = ((userText.match(/<exclude>([\s\S]*?)<\/exclude>/) || [])[1] || '').split('、').map((x) => x.toLowerCase());
-  const terms = Object.entries(MEANINGS)
-    .filter(([t]) => utter.includes(t) && !exclude.includes(t.toLowerCase()))
-    .slice(0, 3)
-    .map(([term, [full, meaning]]) => ({ term, full, meaning }));
+  const said = (t) => utter.includes(t) && !exclude.includes(t.toLowerCase());
+  // まだ定着していない語を優先し、最大4件
+  const terms = [
+    ...Object.entries(NEW_WORDS).filter(([t]) => said(t)).map(([term, w]) => ({ term, full: w.full, meaning: w.meaning, kind: 'new', sure: w.sure })),
+    ...Object.entries(MEANINGS).filter(([t]) => said(t)).map(([term, [full, meaning]]) => ({ term, full, meaning, kind: 'established', sure: true })),
+  ].slice(0, 4);
   const risks = [];
   if (utter.includes('必ず')) risks.push({ label: '約束の言質', level: 'red', tip: 'その場で約束せず、持ち帰って確認する', quote: '必ず今週中に回答' });
   const due = utter.match(/今週中|来月末/);

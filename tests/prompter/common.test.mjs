@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AIError, buildAnalyzeInput, buildExplainInput, buildSummaryInput, httpError, isQuotaExhausted, makeUsage, normalizeResult,
+  AIError, RESULT_SCHEMA, SYSTEM_ANALYZE, SYSTEM_EXPLAIN, buildAnalyzeInput, buildExplainInput, buildSummaryInput, httpError, isQuotaExhausted, makeUsage, normalizeResult,
   parseJsonLoose, parseSummary, readSse, retryAfterOf, todayString,
 } from '../../prompter/ai/common.js';
 
@@ -37,7 +37,7 @@ test('結果を整える: 空の項目を除き、levelをそろえ、長すぎ�
     ],
     risks: [{ label: '期限', level: 'orange', tip: 'x'.repeat(200), quote: 'q' }],
   });
-  assert.deepEqual(out.terms, [{ term: 'KPI', full: '重要業績評価指標', meaning: '目標の達成度を測る指標。' }]);
+  assert.deepEqual(out.terms, [{ term: 'KPI', full: '重要業績評価指標', meaning: '目標の達成度を測る指標。', novel: false, sure: true }]);
   assert.equal(out.risks[0].level, 'yellow');
   assert.equal(out.risks[0].tip.length, 121);
   assert.deepEqual(normalizeResult(null), { terms: [], risks: [] });
@@ -116,4 +116,29 @@ test('待っても戻らない上限(1日の上限・残高不足)を見分け�
   assert.equal(isQuotaExhausted(null), false);
   assert.equal(httpError(429, 'x', { error: { type: 'insufficient_quota' } }).code, 'quota');
   assert.equal(httpError(429, 'x', null).code, 'ratelimit');
+});
+
+test('まだ定着していない語も拾い、意味に自信がなければ「要確認」として出す(意味は作らない)', () => {
+  const item = RESULT_SCHEMA.properties.terms.items;
+  assert.deepEqual(item.properties.kind.enum, ['established', 'new']);
+  assert.equal(item.properties.sure.type, 'boolean');
+  assert.ok(item.required.includes('kind') && item.required.includes('sure'));
+  assert.match(SYSTEM_ANALYZE, /まだ広く定着していない語/);
+  assert.match(SYSTEM_ANALYZE, /推測で意味を作らない/);
+  assert.match(SYSTEM_EXPLAIN, /新しい言葉なら/);
+
+  const out = normalizeResult({
+    terms: [
+      { term: 'パーパス経営', full: '', meaning: '企業の存在意義を軸にした経営', kind: 'new', sure: true },
+      { term: 'シン・業務改革', full: '', meaning: '', kind: 'new', sure: false },
+      { term: '意味なし', full: '', meaning: '', kind: 'established', sure: true },
+      { term: 'KPI', full: '重要業績評価指標', meaning: '目標の達成度を測る指標' },
+    ],
+    risks: [],
+  });
+  assert.deepEqual(out.terms, [
+    { term: 'パーパス経営', full: '', meaning: '企業の存在意義を軸にした経営', novel: true, sure: true },
+    { term: 'シン・業務改革', full: '', meaning: '', novel: true, sure: false },
+    { term: 'KPI', full: '重要業績評価指標', meaning: '目標の達成度を測る指標', novel: false, sure: true },
+  ]);
 });
