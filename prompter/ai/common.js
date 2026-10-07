@@ -219,6 +219,22 @@ export function normalizeResult(obj) {
   };
 }
 
+// 使ったトークン数を、どのAIサービスでも同じ形にそろえる。
+// input: 入力(キャッシュから読んだ分と、検索結果を読み込んだ分も含む)
+// output: 出力(AIが考えた分も含む。料金と同じ数え方)
+// thinking: 出力のうち、AIが考えた分 / cached: 入力のうち、キャッシュから読んだ分
+// searches: Google検索の回数(「要点」だけ)
+export function makeUsage({ input, output, thinking, cached, searches } = {}) {
+  const count = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  };
+  const usage = {
+    input: count(input), output: count(output), thinking: count(thinking), cached: count(cached), searches: count(searches),
+  };
+  return usage.input || usage.output || usage.searches ? usage : null;
+}
+
 // SSE(「data: …」が空行で区切られて届く形式)を読み、1件ずつ渡す。
 // 少しずつ届いても、まとめて届いても、同じように扱う
 export async function readSse(res, onEvent) {

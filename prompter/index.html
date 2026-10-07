@@ -33,6 +33,9 @@
         <div class="live-status">
           <button id="aiToggle" class="ai-chip" type="button"></button>
           <span id="status" class="status" aria-live="polite"></span>
+          <button id="usageChip" class="usage-chip" type="button" hidden>
+            <span id="usageValue" class="usage-value">0</span><span class="usage-unit">トークン</span>
+          </button>
         </div>
 
         <div id="feedWrap" class="feed-wrap">
@@ -162,6 +165,23 @@
               <li>料金は、各AIサービスの従量課金です。サービスの管理画面で、利用上限を設定しておくと安心です。</li>
               <li>組織の会議で使う場合は、外部のAIサービスに会話を送ってよいか、組織のルールを確認してください。</li>
             </ul>
+          </div>
+        </section>
+
+        <section id="usageGroup" class="group">
+          <h2>使ったトークン</h2>
+          <p class="note">AIサービスが返した数を、この端末で数えています。料金は「入力・出力それぞれの数 × 各サービスの単価」で決まります(Geminiを無料枠で使っている場合は、料金はかかりません)。正確な料金や無料枠の残りは、各サービスの管理画面で確かめてください。</p>
+          <div class="setting">
+            <h3>この画面を開いてから</h3>
+            <div id="usageSession"></div>
+          </div>
+          <div class="setting">
+            <h3 id="usageTodayTitle">今日、モデルごと</h3>
+            <div id="usageToday"></div>
+            <p class="note">端末の日付で区切ります。Geminiの無料枠には、モデルごとに1日に使える回数の上限があるので、その目安にもなります。</p>
+            <div class="row">
+              <button id="usageReset" class="pill" type="button">記録を消す</button>
+            </div>
           </div>
         </section>
 

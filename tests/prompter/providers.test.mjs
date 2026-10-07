@@ -237,9 +237,16 @@ function sse(chunks, status = 200) {
 
 test('Gemini 要点: Google検索つきで、少しずつ受け取り、情報源と検索候補を返す', async () => {
   responder = () => sse([
-    { candidates: [{ content: { parts: [{ text: '考え中', thought: true }, { text: '何の話: 米国の関税政策。\n' }] } }] },
+    {
+      candidates: [{ content: { parts: [{ text: '考え中', thought: true }, { text: '何の話: 米国の関税政策。\n' }] } }],
+      usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 12, thoughtsTokenCount: 200, totalTokenCount: 332 },
+    },
     { candidates: [{ content: { parts: [{ text: 'いまの状況: 2026年10月時点で…\n注目点: 交渉の行方' }] } }] },
-    { candidates: [{
+    {
+      usageMetadata: {
+        promptTokenCount: 120, toolUsePromptTokenCount: 1500, candidatesTokenCount: 90, thoughtsTokenCount: 200, totalTokenCount: 1910,
+      },
+      candidates: [{
       finishReason: 'STOP',
       groundingMetadata: {
         webSearchQueries: ['トランプ 関税 現状'],
@@ -254,8 +261,9 @@ test('Gemini 要点: Google検索つきで、少しずつ受け取り、情報�
     }] },
   ]);
   const seen = [];
+  const usages = [];
   const out = await AI.summarize({ provider: 'gemini', apiKey: 'AIza-k', model: 'gemini-3.5-flash-lite' }, 'トランプ大統領の関税', '関税はどうなってる', {
-    model: 'gemini-3.5-flash', today: '2026-10-07', onText: (t) => seen.push(t),
+    model: 'gemini-3.5-flash', today: '2026-10-07', onText: (t) => seen.push(t), onUsage: (u) => usages.push(u),
   });
   const c = calls[0];
   assert.equal(c.url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse');
@@ -271,6 +279,10 @@ test('Gemini 要点: Google検索つきで、少しずつ受け取り、情報�
   assert.deepEqual(out.queries, ['トランプ 関税 現状']);
   assert.match(out.suggestionHtml, /Google/);
   assert.equal(out.model, 'gemini-3.5-flash');
+  // 使ったトークン数は、最後に届いた数で1回だけ知らせる(検索結果の読み込み分は入力、考えた分は出力に数える)
+  assert.deepEqual(usages, [{
+    input: 1620, output: 290, thinking: 200, cached: 0, searches: 1, provider: 'gemini', model: 'gemini-3.5-flash',
+  }]);
 });
 
 test('Gemini 要点: エラー・拒否・時間切れを、利用者向けのエラーにする', async () => {
@@ -286,6 +298,99 @@ test('Gemini 要点: エラー・拒否・時間切れを、利用者向けの�
 
   responder = never;
   await assert.rejects(AI.summarize(cfg, 'X', '', { timeoutMs: 50 }), (e) => e.code === 'timeout');
+});
+
+test('使ったトークン数: Claudeはキャッシュから読んだ分も入力に数え、考えた分を添える', async () => {
+  responder = () => json(200, claudeMessage(JSON.stringify(RESULT), {
+    usage: {
+      input_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: 900, output_tokens: 80,
+      output_tokens_details: { thinking_tokens: 30 },
+    },
+  }));
+  const seen = [];
+  const out = await AI.analyze({ provider: 'claude', apiKey: 'k', model: 'claude-sonnet-5-5' }, input, { onUsage: (u) => seen.push(u) });
+  assert.deepEqual(out, RESULT, '結果の形は変えない');
+  assert.deepEqual(seen, [{ input: 912, output: 80, thinking: 30, cached: 900, searches: 0, provider: 'claude', model: 'claude-sonnet-5-5' }]);
+});
+
+test('使ったトークン数: Claudeの自動切り替えでは、試したモデルの分も数える。断られても数える', async () => {
+  const cfg = { provider: 'claude', apiKey: 'k', model: 'claude-sonnet-5-5' };
+  responder = () => json(200, claudeMessage(JSON.stringify(RESULT), {
+    model: 'claude-opus-5',
+    usage: {
+      input_tokens: 300, output_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+      iterations: [
+        { type: 'message', model: 'claude-sonnet-5-5', input_tokens: 300, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        { type: 'fallback_message', model: 'claude-opus-5', input_tokens: 300, output_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      ],
+    },
+  }));
+  const seen = [];
+  await AI.analyze(cfg, input, { onUsage: (u) => seen.push(u) });
+  assert.equal(seen[0].input, 600);
+  assert.equal(seen[0].output, 40);
+
+  responder = () => json(200, claudeMessage('', { stop_reason: 'refusal', usage: { input_tokens: 50, output_tokens: 0 } }));
+  await assert.rejects(AI.analyze(cfg, input, { onUsage: (u) => seen.push(u) }), (e) => e.code === 'refusal');
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].input, 50);
+});
+
+test('使ったトークン数: OpenAIは考えた分とキャッシュ分を添える。返らない接続先では知らせない', async () => {
+  responder = () => json(200, {
+    choices: [{ message: { content: JSON.stringify(RESULT) }, finish_reason: 'stop' }],
+    usage: {
+      prompt_tokens: 700, completion_tokens: 120, total_tokens: 820,
+      prompt_tokens_details: { cached_tokens: 512 }, completion_tokens_details: { reasoning_tokens: 64 },
+    },
+  });
+  const seen = [];
+  await AI.analyze({ provider: 'openai', apiKey: 'k', model: 'gpt-5.6-luna' }, input, { onUsage: (u) => seen.push(u) });
+  assert.deepEqual(seen, [{ input: 700, output: 120, thinking: 64, cached: 512, searches: 0, provider: 'openai', model: 'gpt-5.6-luna' }]);
+
+  responder = () => json(200, { choices: [{ message: { content: '{"terms":[],"risks":[]}' }, finish_reason: 'stop' }] });
+  await AI.analyze({ provider: 'compatible', apiKey: '', model: 'llama3', baseUrl: 'http://localhost:11434/v1' }, input, {
+    onUsage: (u) => seen.push(u),
+  });
+  assert.equal(seen.length, 1);
+});
+
+test('使ったトークン数: Geminiは考えた分も出力に数える。「詳しく」と接続テストでも知らせる', async () => {
+  const cfg = { provider: 'gemini', apiKey: 'k', model: 'models/gemini-3.5-flash-lite' };
+  responder = () => json(200, {
+    candidates: [{ content: { parts: [{ text: JSON.stringify(RESULT) }] }, finishReason: 'STOP' }],
+    usageMetadata: { promptTokenCount: 850, cachedContentTokenCount: 600, candidatesTokenCount: 60, thoughtsTokenCount: 25, totalTokenCount: 935 },
+  });
+  const seen = [];
+  await AI.analyze(cfg, input, { onUsage: (u) => seen.push(u) });
+  assert.deepEqual(seen, [{ input: 850, output: 85, thinking: 25, cached: 600, searches: 0, provider: 'gemini', model: 'gemini-3.5-flash-lite' }]);
+
+  const test = await AI.testConnection(cfg, { onUsage: (u) => seen.push(u) });
+  assert.deepEqual(test.result, RESULT);
+  assert.equal(test.usage.input, 850);
+  assert.equal(seen.length, 2);
+
+  responder = () => json(200, {
+    candidates: [{ content: { parts: [{ text: 'KPIは、目標の達成度を測る指標です。' }] }, finishReason: 'STOP' }],
+    usageMetadata: { promptTokenCount: 40, candidatesTokenCount: 30 },
+  });
+  assert.equal(await AI.explain(cfg, 'KPI', '', { onUsage: (u) => seen.push(u) }), 'KPIは、目標の達成度を測る指標です。');
+  assert.deepEqual([seen[2].input, seen[2].output], [40, 30]);
+  // 知らせる先で失敗しても、結果は返す
+  assert.equal(await AI.explain(cfg, 'KPI', '', { onUsage: () => { throw new Error('表示の失敗'); } }), 'KPIは、目標の達成度を測る指標です。');
+});
+
+test('使ったトークン数: 「要点」が途中で失敗しても、それまでに使った分は知らせる', async () => {
+  responder = () => sse([
+    { candidates: [{ content: { parts: [{ text: '何の話: ' }] } }], usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 3 } },
+    { error: { code: 503, message: 'overloaded' } },
+  ]);
+  const seen = [];
+  await assert.rejects(
+    AI.summarize({ provider: 'gemini', apiKey: 'k', model: 'gemini-3.5-flash' }, 'X', '', { onUsage: (u) => seen.push(u) }),
+    (e) => e.code === 'server',
+  );
+  assert.deepEqual([seen.length, seen[0].input, seen[0].output], [1, 100, 3]);
 });
 
 test('要点はGeminiだけ(ほかのサービスでは、呼ばずに案内する)', async () => {
