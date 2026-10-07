@@ -1,7 +1,7 @@
 // Gemini(Google)への接続。利用者が入れたAPIキーで、ブラウザから直接呼ぶ。
 import {
   AIError, MESSAGES, RESULT_SCHEMA, SYSTEM_ANALYZE, SYSTEM_EXPLAIN, SYSTEM_SUMMARY,
-  buildAnalyzeInput, buildExplainInput, buildSummaryInput, fetchJson, httpError, normalizeResult,
+  buildAnalyzeInput, buildExplainInput, buildSummaryInput, fetchJson, httpError, makeUsage, normalizeResult,
   parseJsonLoose, readSse,
 } from './common.js';
 
@@ -26,7 +26,21 @@ function thinkingConfig(model) {
 // 任意の指定を受け付けなかったモデルは、次回から付けない
 const plainModels = new Set();
 
-async function generate(cfg, system, user, json, timeoutMs) {
+// 使ったトークン数(AIが考えた分と、検索結果を読み込んだ分も数える)
+function usageOf(meta, searches = 0) {
+  const m = meta || {};
+  const thinking = m.thoughtsTokenCount || 0;
+  return makeUsage({
+    input: (m.promptTokenCount || 0) + (m.toolUsePromptTokenCount || 0),
+    output: (m.candidatesTokenCount || 0) + thinking,
+    thinking,
+    cached: m.cachedContentTokenCount,
+    searches,
+  });
+}
+
+async function generate(cfg, system, user, json, opts = {}) {
+  const timeoutMs = opts.timeoutMs;
   const model = modelId(cfg);
   const url = GEMINI_BASE + '/models/' + encodeURIComponent(model) + ':generateContent';
   const build = (withOptional) => {
@@ -50,6 +64,8 @@ async function generate(cfg, system, user, json, timeoutMs) {
     plainModels.add(model);
     data = await fetchJson(url, { headers: headers(cfg), body: build(false), timeoutMs });
   }
+  // 断られたり途中で切れたりしても、使った分は知らせる
+  if (opts.onUsage) opts.onUsage(usageOf(data && data.usageMetadata));
   if (data && data.promptFeedback && data.promptFeedback.blockReason) throw new AIError('refusal', MESSAGES.refusal);
   const candidate = data && data.candidates && data.candidates[0];
   if (!candidate) throw new AIError('parse', MESSAGES.parse);
@@ -63,12 +79,12 @@ async function generate(cfg, system, user, json, timeoutMs) {
 }
 
 export async function analyze(cfg, input, opts = {}) {
-  const text = await generate(cfg, SYSTEM_ANALYZE, buildAnalyzeInput(input), true, opts.timeoutMs);
+  const text = await generate(cfg, SYSTEM_ANALYZE, buildAnalyzeInput(input), true, opts);
   return normalizeResult(parseJsonLoose(text));
 }
 
 export async function explain(cfg, term, quote, opts = {}) {
-  const text = await generate(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false, opts.timeoutMs);
+  const text = await generate(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false, opts);
   return text.trim();
 }
 
@@ -143,20 +159,28 @@ export async function summarize(cfg, term, quote, opts = {}) {
     let text = '';
     let meta = null;
     let finish = '';
-    await readSse(res, (chunk) => {
-      if (chunk.error) throw httpError(chunk.error.code || 500, chunk.error.message);
-      if (chunk.promptFeedback && chunk.promptFeedback.blockReason) throw new AIError('refusal', MESSAGES.refusal);
-      const cand = chunk.candidates && chunk.candidates[0];
-      if (!cand) return;
-      if (cand.groundingMetadata) meta = mergeMeta(meta, cand.groundingMetadata);
-      if (cand.finishReason) finish = cand.finishReason;
-      const parts = (cand.content && cand.content.parts) || [];
-      const added = parts.filter((p) => !p.thought && typeof p.text === 'string').map((p) => p.text).join('');
-      if (added) {
-        text += added;
-        if (opts.onText) opts.onText(text);
-      }
-    });
+    let usage = null;
+    try {
+      await readSse(res, (chunk) => {
+        // 使った数は、届くたびに増えていくので、最後に届いたものを使う
+        if (chunk.usageMetadata) usage = chunk.usageMetadata;
+        if (chunk.error) throw httpError(chunk.error.code || 500, chunk.error.message);
+        if (chunk.promptFeedback && chunk.promptFeedback.blockReason) throw new AIError('refusal', MESSAGES.refusal);
+        const cand = chunk.candidates && chunk.candidates[0];
+        if (!cand) return;
+        if (cand.groundingMetadata) meta = mergeMeta(meta, cand.groundingMetadata);
+        if (cand.finishReason) finish = cand.finishReason;
+        const parts = (cand.content && cand.content.parts) || [];
+        const added = parts.filter((p) => !p.thought && typeof p.text === 'string').map((p) => p.text).join('');
+        if (added) {
+          text += added;
+          if (opts.onText) opts.onText(text);
+        }
+      });
+    } finally {
+      // 途中で失敗しても、それまでに使った分は知らせる
+      if (opts.onUsage) opts.onUsage(usageOf(usage, meta ? meta.webSearchQueries.length : 0));
+    }
     if (BLOCKED.includes(finish)) throw new AIError('refusal', MESSAGES.refusal);
     if (!text.trim()) throw new AIError('parse', MESSAGES.parse);
     return {

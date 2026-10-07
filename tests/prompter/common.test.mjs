@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AIError, buildAnalyzeInput, buildExplainInput, buildSummaryInput, httpError, normalizeResult, parseJsonLoose,
+  AIError, buildAnalyzeInput, buildExplainInput, buildSummaryInput, httpError, makeUsage, normalizeResult, parseJsonLoose,
   parseSummary, readSse, todayString,
 } from '../../prompter/ai/common.js';
 
@@ -90,4 +90,11 @@ test('SSE: 少しずつ届いても、まとめて届いても、同じように
   const got2 = [];
   await readSse(whole, (o) => got2.push(o.n));
   assert.deepEqual(got2, [1, 2, 3]);
+});
+
+test('使ったトークン数を、同じ形にそろえる(数でない値や負の値は0、何もなければnull)', () => {
+  assert.deepEqual(makeUsage({ input: '12', output: 3.6 }), { input: 12, output: 4, thinking: 0, cached: 0, searches: 0 });
+  assert.deepEqual(makeUsage({ searches: 2 }), { input: 0, output: 0, thinking: 0, cached: 0, searches: 2 });
+  assert.equal(makeUsage({ input: -5, output: NaN, thinking: 'x' }), null);
+  assert.equal(makeUsage(), null);
 });

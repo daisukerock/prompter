@@ -2,7 +2,7 @@
 // 利用者が入れたAPIキーで、ブラウザから直接呼ぶ。
 import {
   AIError, MESSAGES, SYSTEM_ANALYZE, SYSTEM_EXPLAIN,
-  buildAnalyzeInput, buildExplainInput, fetchJson, normalizeResult, parseJsonLoose,
+  buildAnalyzeInput, buildExplainInput, fetchJson, makeUsage, normalizeResult, parseJsonLoose,
 } from './common.js';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
@@ -28,7 +28,20 @@ function isReasoningModel(cfg) {
 // 任意の指定を受け付けなかった接続先とモデルは、次回から付けない
 const plainModels = new Set();
 
-async function chat(cfg, system, user, json, timeoutMs) {
+// 使ったトークン数(OpenAI互換の接続先では、返らないこともある)
+function usageOf(data) {
+  const u = data && data.usage;
+  if (!u) return null;
+  return makeUsage({
+    input: u.prompt_tokens,
+    output: u.completion_tokens,
+    thinking: u.completion_tokens_details && u.completion_tokens_details.reasoning_tokens,
+    cached: u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens,
+  });
+}
+
+async function chat(cfg, system, user, json, opts = {}) {
+  const timeoutMs = opts.timeoutMs;
   const url = baseUrl(cfg) + '/chat/completions';
   const key = cfg.provider + ':' + cfg.model;
   const build = (withOptional) => {
@@ -49,6 +62,7 @@ async function chat(cfg, system, user, json, timeoutMs) {
     plainModels.add(key);
     data = await fetchJson(url, { headers: headers(cfg), body: build(false), timeoutMs });
   }
+  if (opts.onUsage) opts.onUsage(usageOf(data));
   const choice = data && data.choices && data.choices[0];
   if (!choice) throw new AIError('parse', MESSAGES.parse);
   if (choice.finish_reason === 'content_filter' || (choice.message && choice.message.refusal)) {
@@ -59,12 +73,12 @@ async function chat(cfg, system, user, json, timeoutMs) {
 }
 
 export async function analyze(cfg, input, opts = {}) {
-  const text = await chat(cfg, SYSTEM_ANALYZE, buildAnalyzeInput(input), true, opts.timeoutMs);
+  const text = await chat(cfg, SYSTEM_ANALYZE, buildAnalyzeInput(input), true, opts);
   return normalizeResult(parseJsonLoose(text));
 }
 
 export async function explain(cfg, term, quote, opts = {}) {
-  const text = await chat(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false, opts.timeoutMs);
+  const text = await chat(cfg, SYSTEM_EXPLAIN, buildExplainInput(term, quote), false, opts);
   return text.trim();
 }
 

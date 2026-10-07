@@ -93,16 +93,33 @@ function clean(cfg) {
 // 待ち時間の上限(会議中は短く、接続テストと「詳しく」は長めに待つ)
 const TIMEOUT = { analyze: 30000, explain: 45000, test: 60000, summary: 90000 };
 
+// opts.onUsage(使った数) で、使ったトークン数を知らせる。どのサービス・モデルの分かを添える。
+// 知らせる先で失敗しても、AIの結果は捨てない
+function withUsage(cfg, model, opts) {
+  const onUsage = opts.onUsage;
+  if (typeof onUsage !== 'function') return opts;
+  const name = String(model || '').trim().replace(/^models\//, '');
+  return {
+    ...opts,
+    onUsage: (usage) => {
+      if (!usage) return;
+      try {
+        onUsage({ ...usage, provider: cfg.provider, model: name });
+      } catch (e) { /* 無視 */ }
+    },
+  };
+}
+
 // 発言から、用語と気をつけたい点を見つける
 export async function analyze(cfg, input, opts = {}) {
   cfg = clean(cfg);
-  return (await adapter(cfg)).analyze(cfg, input, { timeoutMs: TIMEOUT.analyze, ...opts });
+  return (await adapter(cfg)).analyze(cfg, input, withUsage(cfg, cfg.model, { timeoutMs: TIMEOUT.analyze, ...opts }));
 }
 
 // 1つの言葉を、もう少し詳しく説明する
-export async function explain(cfg, term, quote) {
+export async function explain(cfg, term, quote, opts = {}) {
   cfg = clean(cfg);
-  return (await adapter(cfg)).explain(cfg, term, quote, { timeoutMs: TIMEOUT.explain });
+  return (await adapter(cfg)).explain(cfg, term, quote, withUsage(cfg, cfg.model, { timeoutMs: TIMEOUT.explain, ...opts }));
 }
 
 // 「要点」(Google検索で確かめた3行の要点)を作れるか。いまはGeminiだけ
@@ -114,7 +131,8 @@ export function canSummarize(cfg) {
 export async function summarize(cfg, term, quote, opts = {}) {
   cfg = clean(cfg);
   if (!canSummarize(cfg)) throw new AIError('config', '「要点」は、いまはGeminiで使えます。設定でGeminiを選んでください。');
-  return (await adapter(cfg)).summarize(cfg, term, quote, { timeoutMs: TIMEOUT.summary, ...opts });
+  const options = withUsage(cfg, opts.model || cfg.model, { timeoutMs: TIMEOUT.summary, ...opts });
+  return (await adapter(cfg)).summarize(cfg, term, quote, options);
 }
 
 export async function listModels(cfg) {
@@ -126,9 +144,16 @@ export async function listModels(cfg) {
   return (await p.load()).listModels(cfg);
 }
 
-// 短い例文で、実際に呼べるかを確かめる
-export async function testConnection(cfg) {
+// 短い例文で、実際に呼べるかを確かめる(使ったトークン数も返す)
+export async function testConnection(cfg, opts = {}) {
   const started = Date.now();
-  const result = await analyze(cfg, { context: [], utterance: TEST_UTTERANCE, exclude: [] }, { timeoutMs: TIMEOUT.test });
-  return { result, ms: Date.now() - started };
+  let usage = null;
+  const result = await analyze(cfg, { context: [], utterance: TEST_UTTERANCE, exclude: [] }, {
+    timeoutMs: TIMEOUT.test,
+    onUsage: (u) => {
+      usage = u;
+      if (opts.onUsage) opts.onUsage(u);
+    },
+  });
+  return { result, ms: Date.now() - started, usage };
 }

@@ -2,7 +2,7 @@
 // 利用者が入れたAPIキーで、ブラウザから直接Claude APIを呼ぶ。
 import {
   AIError, MESSAGES, RESULT_SCHEMA, SYSTEM_ANALYZE, SYSTEM_EXPLAIN,
-  buildAnalyzeInput, buildExplainInput, normalizeResult, withDetail,
+  buildAnalyzeInput, buildExplainInput, makeUsage, normalizeResult, withDetail,
 } from './common.js';
 
 let sdkPromise = null;
@@ -84,7 +84,25 @@ function apiMessage(e) {
   return (e.error && e.error.error && e.error.error.message) || e.message;
 }
 
-async function send(cfg, { system, user, maxTokens, format, timeoutMs }) {
+// 使ったトークン数(キャッシュから読んだ分・書いた分も、入力に数える)。
+// 自動切り替え(fallbacks)が働いたときは、試したモデルの分も数える
+function usageOf(message) {
+  const u = message && message.usage;
+  if (!u) return null;
+  const attempts = Array.isArray(u.iterations) && u.iterations.length ? u.iterations : [u];
+  let input = 0;
+  let output = 0;
+  let cached = 0;
+  for (const a of attempts) {
+    input += (a.input_tokens || 0) + (a.cache_creation_input_tokens || 0) + (a.cache_read_input_tokens || 0);
+    output += a.output_tokens || 0;
+    cached += a.cache_read_input_tokens || 0;
+  }
+  const thinking = u.output_tokens_details && u.output_tokens_details.thinking_tokens;
+  return makeUsage({ input, output, thinking, cached });
+}
+
+async function send(cfg, { system, user, maxTokens, format, timeoutMs, onUsage }) {
   const { Anthropic } = await loadSdk();
   const client = await getClient(cfg.apiKey);
   const caps = capabilities(cfg.model);
@@ -109,6 +127,8 @@ async function send(cfg, { system, user, maxTokens, format, timeoutMs }) {
     }
   }
 
+  // 断られたり途中で切れたりしても、使った分は知らせる
+  if (onUsage) onUsage(usageOf(message));
   // 本文を読む前に、止まった理由を確かめる
   if (message.stop_reason === 'refusal') throw new AIError('refusal', MESSAGES.refusal);
   if (message.stop_reason === 'max_tokens') throw new AIError('parse', 'AIの回答が、途中で切れました。');
@@ -134,6 +154,7 @@ export async function analyze(cfg, input, opts = {}) {
     maxTokens: 8000,
     format,
     timeoutMs: opts.timeoutMs,
+    onUsage: opts.onUsage,
   });
   let parsed;
   try {
@@ -150,6 +171,7 @@ export async function explain(cfg, term, quote, opts = {}) {
     user: buildExplainInput(term, quote),
     maxTokens: 4000,
     timeoutMs: opts.timeoutMs,
+    onUsage: opts.onUsage,
   });
   return text.trim();
 }

@@ -197,6 +197,7 @@ const state = {
   keys: store.get('pl_keys', {}), // AIサービスごとのAPIキー
   ai: { pending: [], timer: null, busy: false, halted: '', nextAt: 0 },
   summaryBusy: 0,
+  usage: {}, // この画面を開いてから使ったトークン(種類ごと)
   ui: 1, // 設定が変わってカードのボタンが変わるときに増やす
   filter: 'all',
   transcriptOpen: false,
@@ -240,6 +241,59 @@ const aiReady = () => AI.isReady(aiConfig());
 const aiActive = () => aiReady() && state.settings.aiEnabled && !state.ai.halted;
 const isKnown = (term) => state.known.has(String(term).toLowerCase());
 const canSummary = () => AI.canSummarize(aiConfig());
+
+// ---------- 使ったトークン ----------
+const USAGE_KINDS = { analyze: '自動判定', explain: '詳しく', summary: '要点', test: '接続テスト' };
+const TALLY_KEYS = ['n', 'input', 'output', 'thinking', 'cached', 'searches'];
+const numberFormat = new Intl.NumberFormat('ja-JP');
+const fmt = (n) => numberFormat.format(Number(n) || 0);
+const emptyTally = () => Object.fromEntries(TALLY_KEYS.map((k) => [k, 0]));
+
+function addTally(tally, add) {
+  TALLY_KEYS.forEach((k) => { tally[k] = (Number(tally[k]) || 0) + (Number(add[k]) || 0); });
+  return tally;
+}
+
+// 大きな数は「万」でまとめる(例: 12,345 → 1.2万)
+function compact(n) {
+  const short = (v, unit) => v.toFixed(1).replace(/\.0$/, '') + unit;
+  if (n >= 1e8) return short(n / 1e8, '億');
+  if (n >= 1e4) return short(n / 1e4, '万');
+  return fmt(n);
+}
+
+// 例: 「入力 1,234・出力 567(うち思考 120)」
+function tokenText(u) {
+  return '入力 ' + fmt(u.input) + '・出力 ' + fmt(u.output) + (u.thinking ? '(うち思考 ' + fmt(u.thinking) + ')' : '');
+}
+
+// 例: 「使ったトークン: 入力 1,234・出力 567・Google検索 2回」。サービスが返した数だけを書く
+function describeUsage(u) {
+  const parts = [];
+  if (u.input || u.output) parts.push('使ったトークン: ' + tokenText(u));
+  if (u.searches) parts.push('Google検索 ' + fmt(u.searches) + '回');
+  return parts.join('・');
+}
+
+// 今日の分(端末の日付で区切る)。別のタブで足した分を消さないよう、足す前に読み直す
+function loadTodayUsage() {
+  const saved = store.get('pl_usage', null);
+  const date = todayString();
+  if (saved && saved.date === date && saved.models && typeof saved.models === 'object' && !Array.isArray(saved.models)) return saved;
+  return { date, models: {} };
+}
+
+function recordUsage(kind, usage) {
+  if (!usage) return;
+  const one = Object.assign({}, usage, { n: 1 });
+  addTally(state.usage[kind] || (state.usage[kind] = emptyTally()), one);
+  const today = loadTodayUsage();
+  const id = usage.provider + '/' + usage.model;
+  if (!today.models[id]) today.models[id] = Object.assign({ provider: usage.provider, model: usage.model }, emptyTally());
+  addTally(today.models[id], one);
+  store.set('pl_usage', today);
+  renderUsage();
+}
 
 // ---------- カードの作成 ----------
 function aiTermCard(t, lines) {
@@ -375,7 +429,9 @@ async function flushAI() {
   ai.busy = true;
   updateAiUi();
   try {
-    const result = await AI.analyze(aiConfig(), { context, utterance: batch.join('\n'), exclude: excludeList() });
+    const result = await AI.analyze(aiConfig(), { context, utterance: batch.join('\n'), exclude: excludeList() }, {
+      onUsage: (u) => recordUsage('analyze', u),
+    });
     if (gen !== state.gen) return;
     const termCards = result.terms.filter((t) => !isKnown(t.term)).map((t) => aiTermCard(t, batch));
     const riskCards = result.risks.map((r) => aiRiskCard(r, batch));
@@ -627,6 +683,98 @@ function updateAiUi() {
   updateBusy();
 }
 
+// ---------- 使ったトークンの表示 ----------
+// 数字を、いま出ている値から、なめらかに数え上げる(記録を消したときは、すぐに戻す)
+const counter = { shown: 0, raf: 0 };
+function countTo(node, to) {
+  cancelAnimationFrame(counter.raf);
+  const from = counter.shown;
+  if (!motionOK() || to <= from) {
+    counter.shown = to;
+    node.textContent = compact(to);
+    return;
+  }
+  const start = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / 700);
+    counter.shown = Math.round(from + (to - from) * (1 - Math.pow(1 - t, 3)));
+    node.textContent = compact(counter.shown);
+    if (t < 1) counter.raf = requestAnimationFrame(step);
+  };
+  counter.raf = requestAnimationFrame(step);
+}
+
+// 回数・入力・出力の表と、その下の補足
+function usageBlock(head, rows, total) {
+  const line = (label, t) => {
+    const tr = el('tr');
+    const th = el('th', null, label);
+    th.scope = 'row';
+    tr.append(th, el('td', null, fmt(t.n)), el('td', null, fmt(t.input)), el('td', null, fmt(t.output)));
+    return tr;
+  };
+  const headRow = el('tr');
+  [head, '回数', '入力', '出力'].forEach((h) => {
+    const th = el('th', null, h);
+    th.scope = 'col';
+    headRow.append(th);
+  });
+  const thead = el('thead');
+  thead.append(headRow);
+  const tbody = el('tbody');
+  rows.forEach(([label, t]) => tbody.append(line(label, t)));
+  const table = el('table', 'usage-table');
+  table.append(thead, tbody);
+  if (rows.length > 1) {
+    const tfoot = el('tfoot');
+    tfoot.append(line('合計', total));
+    table.append(tfoot);
+  }
+  const notes = [];
+  if (total.thinking) notes.push('出力のうち、AIが考えた分 ' + fmt(total.thinking));
+  if (total.cached) notes.push('入力のうち、キャッシュから読んだ分 ' + fmt(total.cached));
+  if (total.searches) notes.push('Google検索 ' + fmt(total.searches) + '回');
+  return notes.length ? [table, el('p', 'note', notes.join('。') + '。')] : [table];
+}
+
+function renderUsage() {
+  const rows = Object.keys(USAGE_KINDS)
+    .filter((k) => state.usage[k] && state.usage[k].n)
+    .map((k) => [USAGE_KINDS[k], state.usage[k]]);
+  const total = rows.reduce((sum, [, t]) => addTally(sum, t), emptyTally());
+  const tokens = total.input + total.output;
+
+  // 聞く画面の小さな表示(この画面を開いてからの合計)
+  const chip = $('#usageChip');
+  const appearing = chip.hidden && tokens > 0;
+  chip.hidden = tokens === 0;
+  $('.live-status').classList.toggle('has-usage', tokens > 0);
+  if (tokens > 0) chip.title = 'この画面を開いてから使ったトークン: ' + tokenText(total) + '。押すと内訳を出します';
+  if (appearing) play(chip, [{ opacity: 0, transform: 'scale(.85)' }, { opacity: 1, transform: 'none' }], { duration: 380 });
+  countTo($('#usageValue'), tokens);
+
+  // 設定画面の表
+  $('#usageSession').replaceChildren(...(rows.length ? usageBlock('種類', rows, total) : [el('p', 'note', 'まだ使っていません。')]));
+  const today = loadTodayUsage();
+  const models = Object.values(today.models)
+    .filter((m) => m && Number(m.n) > 0)
+    .sort((a, b) => b.n - a.n);
+  const d = new Date();
+  $('#usageTodayTitle').textContent = '今日(' + (d.getMonth() + 1) + '月' + d.getDate() + '日)、モデルごと';
+  const modelRows = models.map((m) => [String(m.model || '不明') + (m.provider === 'compatible' ? '(互換AI)' : ''), m]);
+  const modelTotal = models.reduce((sum, m) => addTally(sum, m), emptyTally());
+  $('#usageToday').replaceChildren(...(models.length ? usageBlock('モデル', modelRows, modelTotal) : [el('p', 'note', 'まだ使っていません。')]));
+}
+
+function showUsageDetail() {
+  showView('settings');
+  const group = $('#usageGroup');
+  requestAnimationFrame(() => group.scrollIntoView({ behavior: motionOK() ? 'smooth' : 'auto', block: 'start' }));
+  group.classList.remove('is-flash');
+  void group.offsetWidth;
+  group.classList.add('is-flash');
+}
+
 // ---------- カードの操作 ----------
 function dismissCard(id) {
   state.cards = state.cards.filter((c) => c.id !== id);
@@ -709,7 +857,7 @@ async function explainCard(card) {
   if (card.detail && card.detail.loading) return;
   setDetail(card, { text: 'AIに聞いています…', loading: true });
   try {
-    const text = await AI.explain(aiConfig(), card.term, card.quote);
+    const text = await AI.explain(aiConfig(), card.term, card.quote, { onUsage: (u) => recordUsage('explain', u) });
     setDetail(card, { text: text || 'AIから、説明が返りませんでした。' });
   } catch (e) {
     setDetail(card, { text: (e && e.message) || '説明を取得できませんでした。', error: true });
@@ -789,6 +937,7 @@ async function startSummary(card, model) {
   state.summaryBusy++;
   updateBusy();
   if (sheet.card && sheet.card.key === card.key) renderSheet();
+  let used = null;
   try {
     const result = await AI.summarize(aiConfig(), card.term, card.quote, {
       model,
@@ -799,12 +948,17 @@ async function startSummary(card, model) {
         run.text = text;
         if (sheet.open && sheet.card && sheet.card.key === card.key) renderSummaryItems(parseSummary(text), true);
       },
+      onUsage: (u) => {
+        used = u;
+        recordUsage('summary', u);
+      },
     });
     if (runs.get(card.key) !== run) return;
     runs.delete(card.key);
     const summary = {
       items: parseSummary(result.text), sources: result.sources, suggestionHtml: result.suggestionHtml,
       model: result.model, at: Date.now(), truncated: result.truncated,
+      usage: used ? { input: used.input, output: used.output, thinking: used.thinking, searches: used.searches } : null,
     };
     updateCopies(card.key, (c) => { c.summary = summary; });
     persistSaved();
@@ -901,8 +1055,10 @@ function renderSheet() {
   meta.hidden = !done;
   if (done) {
     const at = new Date(summary.at);
+    const used = summary.usage ? describeUsage(summary.usage) : '';
     meta.textContent = at.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-      + ' の検索結果・' + summary.model + (summary.truncated ? '(途中で切れています)' : '');
+      + ' の検索結果・' + summary.model + (summary.truncated ? '(途中で切れています)' : '')
+      + (used ? '\n' + used : '');
   }
   const sources = done ? summary.sources || [] : [];
   $('#sumSources').hidden = !sources.length;
@@ -1150,7 +1306,10 @@ function showView(name) {
     t.setAttribute('aria-selected', String(on));
   });
   if (name === 'saved') renderSaved();
-  if (name === 'settings') renderSettings();
+  if (name === 'settings') {
+    renderSettings();
+    renderUsage();
+  }
   if (next.classList.contains('is-active')) return;
   document.querySelectorAll('.view').forEach((v) => v.classList.toggle('is-active', v === next));
   play(next, [{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], { duration: 300 });
@@ -1268,15 +1427,17 @@ async function runTest() {
   btn.disabled = true;
   setTestResult('確認しています…(最大60秒)');
   try {
-    const { result, ms } = await AI.testConnection(aiConfig());
+    const { result, ms, usage } = await AI.testConnection(aiConfig(), { onUsage: (u) => recordUsage('test', u) });
     state.ai.halted = '';
     const terms = result.terms.map((t) => t.term + ':' + t.meaning).join(' / ');
     const risks = result.risks.map((r) => r.label).join('・');
     const slow = ms > SLOW_TEST_MS;
+    const used = usage ? describeUsage(usage) : '';
     setTestResult(
       'つながりました(' + (ms / 1000).toFixed(1) + '秒)。'
       + (terms ? ' 用語 ' + terms + '。' : ' 用語は見つかりませんでした。')
       + (risks ? ' 注意点 ' + risks + '。' : '')
+      + (used ? ' ' + used + '。' : '')
       + (slow ? ' ただし、応答が遅いため、会議中はカードが遅れて出ます。速いモデル(Gemini 3.5 Flash-Lite、Claude Haiku 4.5など)をおすすめします。' : ''),
       slow ? 'warn' : 'ok',
     );
@@ -1298,6 +1459,7 @@ function bind() {
   $('#demoBtn').addEventListener('click', runDemo);
   $('#clearBtn').addEventListener('click', clearScreen);
   $('#setupBtn').addEventListener('click', () => showView('settings'));
+  $('#usageChip').addEventListener('click', showUsageDetail);
   $('#transcriptToggle').addEventListener('click', () => toggleTranscript());
   $('#aiToggle').addEventListener('click', () => {
     if (!aiReady() || state.ai.halted) {
@@ -1409,6 +1571,12 @@ function bind() {
     applyDisplaySettings();
   });
   $('#wakeLock').addEventListener('change', (e) => { state.settings.wake = e.target.checked; persistSettings(); });
+  $('#usageReset').addEventListener('click', () => {
+    state.usage = {};
+    store.remove('pl_usage');
+    renderUsage();
+    toast('トークンの記録を消しました');
+  });
   $('#resetKnown').addEventListener('click', () => {
     state.known.clear();
     persistKnown();
@@ -1428,6 +1596,7 @@ applyDisplaySettings();
 bind();
 renderSettings();
 updateAiUi();
+renderUsage();
 renderFeed();
 renderSaved();
 renderTranscript();
