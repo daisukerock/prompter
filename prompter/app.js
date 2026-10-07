@@ -1,5 +1,6 @@
 import * as Detect from './detect.js';
 import * as AI from './ai/index.js';
+import * as Backup from './backup.js';
 import { parseSummary, todayString } from './ai/common.js';
 
 const $ = (s) => document.querySelector(s);
@@ -40,11 +41,22 @@ const store = {
       return v ? JSON.parse(v) : fallback;
     } catch (e) { return fallback; }
   },
+  // 保存できなかったら false を返し、画面で知らせる(黙って失わないように)
   set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* 保存できなくても動かす */ }
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (e) {
+      storageFailed(e);
+      return false;
+    }
   },
   remove(key) {
     try { localStorage.removeItem(key); } catch (e) { /* 無視 */ }
+  },
+  // 保存している文字数(目安)
+  size(key) {
+    try { return (localStorage.getItem(key) || '').length; } catch (e) { return 0; }
   },
 };
 
@@ -204,7 +216,7 @@ const state = {
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-const persistSaved = () => store.set('pl_saved', state.saved);
+const persistSaved = () => store.set('pl_saved', Backup.compactSaved(state.saved, Date.now(), SUMMARY_FRESH_MS));
 const persistKnown = () => store.set('pl_known', [...state.known]);
 const persistSettings = () => store.set('pl_settings', state.settings);
 function persistKeys() {
@@ -612,6 +624,7 @@ function renderSaved() {
     patch: (node, c) => patchCard(node, c, 'saved'),
   });
   $('#savedEmpty').hidden = list.length > 0;
+  renderBackup();
 }
 
 // ---------- 文字起こしの描画(新しい行だけを足す) ----------
@@ -783,6 +796,7 @@ function dismissCard(id) {
 
 function saveCard(card) {
   const exists = state.saved.some((s) => s.key === card.key);
+  let stored = true;
   if (!exists) {
     state.saved.unshift({
       id: uid(), key: card.key, kind: card.kind, term: card.term, title: card.title, sub: card.sub,
@@ -791,7 +805,8 @@ function saveCard(card) {
       summary: card.summary || null,
       ts: Date.now(), status: 'new', memo: '', v: 1,
     });
-    persistSaved();
+    stored = persistSaved();
+    requestPersist();
     const badge = $('#savedCount');
     badge.classList.remove('bump');
     void badge.offsetWidth;
@@ -800,7 +815,7 @@ function saveCard(card) {
   state.cards = state.cards.filter((c) => c.id !== card.id);
   renderFeed();
   renderSaved();
-  toast(exists ? 'すでに保存されています' : '保存しました');
+  toast(exists ? 'すでに保存されています' : stored ? '保存しました' : '画面には残しましたが、端末に保存できませんでした');
 }
 
 function markKnown(card) {
@@ -900,6 +915,86 @@ function exportList() {
   }).join('\n\n');
   if (!text) { toast('コピーするカードがありません'); return; }
   copyText(text).then(() => toast('一覧をコピーしました'), () => toast('コピーできませんでした'));
+}
+
+// ---------- 保存の失敗と、バックアップ ----------
+let storageWarnedAt = 0;
+
+// 端末に保存できなかったことを、画面の上に出して知らせる(続けて失敗しても、1分に1回まで)
+function storageFailed(error) {
+  const bar = $('#storageBanner');
+  if (!bar || !bar.hidden || Date.now() - storageWarnedAt < 60000) return;
+  storageWarnedAt = Date.now();
+  const full = !!error && (error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED' || error.code === 22 || error.code === 1014);
+  $('#storageText').textContent = full
+    ? '端末の保存領域がいっぱいで、保存できませんでした。保存カードを書き出してから、いらないカードを削除してください。'
+    : 'この端末では、データを保存できませんでした(プライベートブラウズや、保存を止める設定など)。画面を閉じると、保存カードや設定が消えます。';
+  bar.hidden = false;
+  play(bar, [{ opacity: 0, transform: 'translateY(-8px)' }, { opacity: 1, transform: 'none' }], { duration: 300 });
+}
+
+// 保存カードを、ブラウザが勝手に消さないように頼む(対応しているブラウザだけ)
+let persistAsked = false;
+function requestPersist() {
+  if (persistAsked || !navigator.storage || !navigator.storage.persist) return;
+  persistAsked = true;
+  navigator.storage.persisted().then((done) => done || navigator.storage.persist()).catch(() => {});
+}
+
+const isStandalone = () => !!((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone);
+
+// 保存カードと「知っている」語を、ファイルに書き出す(APIキーと設定は入れない)
+function exportBackup() {
+  const data = Backup.makeBackup({ saved: state.saved, known: state.known });
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const a = el('a');
+  a.href = url;
+  a.download = Backup.backupFileName();
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  store.set('pl_backup', { at: Date.now() });
+  renderBackup();
+  toast(state.saved.length + '枚のカードを、ファイルに書き出しました');
+}
+
+// 書き出したファイルを読み込み、いまの保存カードに足す
+async function importBackup(file) {
+  if (!file) return;
+  let merged;
+  try {
+    const data = Backup.parseBackup(await file.text(), { now: Date.now(), freshMs: SUMMARY_FRESH_MS, makeId: uid });
+    merged = Backup.mergeSaved(state.saved, data.cards);
+    state.saved = merged.saved;
+    data.known.forEach((t) => state.known.add(t));
+  } catch (e) {
+    toast('読み込めませんでした。プロンプターで書き出したファイルを選んでください');
+    return;
+  }
+  const stored = persistSaved();
+  persistKnown();
+  requestPersist();
+  renderSaved();
+  toast(!stored ? '読み込みましたが、端末に保存できませんでした'
+    : merged.added + '枚を読み込みました' + (merged.skipped ? '(' + merged.skipped + '枚は、すでにありました)' : ''));
+}
+
+function renderBackup() {
+  const info = store.get('pl_backup', null);
+  const lastAt = info && info.at;
+  const pending = Backup.unexportedCount(state.saved, lastAt);
+  // 保存カードの画面: まだ書き出していないカードがあれば知らせる
+  $('#backupHint').hidden = !pending;
+  if (pending) $('#backupHintText').textContent = (lastAt ? '前回の書き出しの後に保存したカードが、' : 'まだ書き出していないカードが、') + pending + '枚あります。';
+  // 設定画面
+  const n = state.saved.length;
+  const size = n ? '(約' + Math.max(1, Math.round(store.size('pl_saved') / 1024)) + 'KB)' : '';
+  const when = lastAt
+    ? '最後の書き出し: ' + new Date(lastAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '。'
+    : 'まだ書き出していません。';
+  $('#backupStatus').textContent = '保存カード ' + n + '枚' + size + '。' + when;
+  $('#evictionNote').hidden = isStandalone();
 }
 
 // ---------- 要点(Google検索で確かめた3行) ----------
@@ -1491,6 +1586,15 @@ function bind() {
     renderSaved();
   });
   $('#exportBtn').addEventListener('click', exportList);
+  $('#backupHintBtn').addEventListener('click', exportBackup);
+  $('#backupExport').addEventListener('click', exportBackup);
+  $('#backupFile').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    importBackup(file);
+  });
+  $('#storageExport').addEventListener('click', exportBackup);
+  $('#storageClose').addEventListener('click', () => { $('#storageBanner').hidden = true; });
 
   // 要点のシート
   $('#sheetBackdrop').addEventListener('click', closeSheet);

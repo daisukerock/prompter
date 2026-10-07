@@ -25,6 +25,13 @@
     </nav>
   </header>
   <div id="busyBar" class="busybar" aria-hidden="true"></div>
+  <div id="storageBanner" class="notice" role="alert" hidden>
+    <p id="storageText"></p>
+    <div class="notice-actions">
+      <button id="storageExport" class="pill primary" type="button">書き出す</button>
+      <button id="storageClose" class="pill" type="button">閉じる</button>
+    </div>
+  </div>
 
   <main class="views">
     <!-- 聞く -->
@@ -93,6 +100,10 @@
             <button class="chip" data-filter="learned">覚えた</button>
           </div>
           <button id="exportBtn" class="pill">一覧をコピー</button>
+        </div>
+        <div id="backupHint" class="banner" hidden>
+          <p><span id="backupHintText"></span>端末のデータが消えたときのために、ファイルに書き出しておくと安心です。</p>
+          <button id="backupHintBtn" class="pill primary" type="button">書き出す</button>
         </div>
         <div id="savedList" class="feed"></div>
         <p id="savedEmpty" class="empty-text center">保存したカードは、まだありません。</p>
@@ -206,6 +217,20 @@
           </div>
           <div class="setting">
             <label class="check"><input id="wakeLock" type="checkbox" checked> 聞き取り中は、画面を消さない</label>
+          </div>
+          <div class="setting">
+            <h3>バックアップ</h3>
+            <p class="note" id="backupStatus"></p>
+            <div class="row">
+              <button id="backupExport" class="pill primary" type="button">ファイルに書き出す</button>
+              <input id="backupFile" class="visually-hidden" type="file" accept=".json,application/json">
+              <label class="pill" for="backupFile">ファイルから読み込む</label>
+            </div>
+            <ul class="note">
+              <li>保存カードと「知っている」語を、1つのファイルに書き出します。APIキーと設定は含めません。</li>
+              <li>読み込むと、いまの保存カードに足します(同じカードは足しません)。</li>
+              <li id="evictionNote">iPhoneのSafariでは、7日間開かないと、保存データが消えることがあります。ホーム画面に追加して使うか、ときどき書き出してください。</li>
+            </ul>
           </div>
           <div class="setting">
             <h3>データについて</h3>
