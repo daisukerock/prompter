@@ -23,10 +23,15 @@ jobs:
         run: npm ci
       - name: Unit tests
         run: npm test
+      # 公開するのと同じ形(版を付けたファイル)で確かめる
+      - name: Build the published files
+        run: node tools/stamp-version.mjs prompter _site "ci-${GITHUB_SHA::8}"
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Browser tests
         run: npx playwright test
+        env:
+          E2E_ROOT: _site
       - name: Keep the report when tests fail
         if: failure()
         uses: actions/upload-artifact@v4

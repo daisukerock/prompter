@@ -4,6 +4,7 @@ import * as Backup from './backup.js';
 import { parseSummary, todayString } from './ai/common.js';
 
 const $ = (s) => document.querySelector(s);
+const BUILD = 'dev'; // 公開するときに、版(コミット)に置き換わる(tools/stamp-version.mjs)
 const FEED_MAX = 40; // 画面に残すカードの数
 const DEDUPE_MS = 5 * 60 * 1000;
 const AI_WAIT_MS = 1200; // 話の区切りを待ってから、まとめて送る
@@ -1695,13 +1696,33 @@ function bind() {
   });
 }
 
-persistSettings(); // 設定の版の切り替えを、保存しておく
-applyDisplaySettings();
-bind();
-renderSettings();
-updateAiUi();
-renderUsage();
-renderFeed();
-renderSaved();
-renderTranscript();
-if (!SR) setStatus('このブラウザは、音声認識に対応していません。文字起こし欄から入力して試せます。', true);
+// 画面(index.html)と、このファイルの版が違うとき(更新の直後に古いファイルが残っていた)は、
+// 1回だけ読み込み直して、そろえる。読み込み直しても違うときは、そのまま動かす
+function versionMatches() {
+  const meta = document.querySelector('meta[name="app-version"]');
+  const page = meta ? meta.content : 'dev';
+  if (page === BUILD) return true;
+  let tried = null;
+  try { tried = sessionStorage.getItem('pl_reload_for'); } catch (e) { /* 使えなくても続ける */ }
+  if (tried === BUILD) return true;
+  try { sessionStorage.setItem('pl_reload_for', BUILD); } catch (e) { /* 無視 */ }
+  location.reload();
+  return false;
+}
+
+function start() {
+  persistSettings(); // 設定の版の切り替えを、保存しておく
+  applyDisplaySettings();
+  bind();
+  renderSettings();
+  updateAiUi();
+  renderUsage();
+  renderFeed();
+  renderSaved();
+  renderTranscript();
+  $('#appVersion').textContent = '版: ' + BUILD;
+  if (!SR) setStatus('このブラウザは、音声認識に対応していません。文字起こし欄から入力して試せます。', true);
+  if (window.__prompterStarted) window.__prompterStarted();
+}
+
+if (versionMatches()) start();

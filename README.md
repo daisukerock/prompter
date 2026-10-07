@@ -15,5 +15,6 @@
 | `tests/e2e/` | 通しテスト(ブラウザで画面を動かし、AIの応答は模擬する。`npx playwright test`) |
 | `package.json`・`playwright.config.js` | テストの道具の設定(アプリ本体には不要) |
 | `tools/build-anthropic-sdk.sh` | 同梱のClaude公式SDKを作り直すスクリプト |
+| `tools/stamp-version.mjs` | 公開するファイルの読み込み先に版を付ける(`npm run build` で `_site/` に作る) |
 | `.github/workflows/test.yml` | PRごとに、単体テストと通しテストを実行 |
-| `.github/workflows/pages.yml` | `main` への push で、テストが通ったときだけ `prompter/` をGitHub Pagesに公開 |
+| `.github/workflows/pages.yml` | `main` への push で、テストが通ったときだけ、版を付けた `prompter/` をGitHub Pagesに公開 |
