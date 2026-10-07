@@ -393,6 +393,49 @@ test('使ったトークン数: 「要点」が途中で失敗しても、それ
   assert.deepEqual([seen.length, seen[0].input, seen[0].output], [1, 100, 3]);
 });
 
+test('上限: Geminiは示された待ち時間を読み、1日の上限は「待っても戻らない」と区別する', async () => {
+  const cfg = { provider: 'gemini', apiKey: 'k', model: 'gemini-3.5-flash-lite' };
+  responder = () => json(429, { error: {
+    code: 429, status: 'RESOURCE_EXHAUSTED', message: 'Please retry in 37.2s.',
+    details: [
+      { '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }] },
+      { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '37s' },
+    ],
+  } });
+  await assert.rejects(AI.analyze(cfg, input), (e) => e.code === 'ratelimit' && e.retryAfterMs === 37000);
+
+  responder = () => json(429, { error: {
+    code: 429, status: 'RESOURCE_EXHAUSTED', message: 'quota exceeded',
+    details: [{ '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }],
+  } });
+  await assert.rejects(AI.analyze(cfg, input), (e) => e.code === 'quota' && /16時/.test(e.message));
+
+  // 要点(少しずつ届く形)の途中で届いたエラーも同じに扱う
+  responder = () => sse([{ error: { code: 429, message: 'slow down', details: [{ retryDelay: '5.5s' }] } }]);
+  await assert.rejects(AI.summarize(cfg, 'X', ''), (e) => e.code === 'ratelimit' && e.retryAfterMs === 5500);
+});
+
+test('上限: OpenAIは retry-after を読み、残高不足は「待っても戻らない」とする', async () => {
+  const cfg = { provider: 'openai', apiKey: 'k', model: 'gpt-5.6-luna' };
+  responder = () => new Response(JSON.stringify({ error: { message: 'Rate limit reached', type: 'requests' } }), {
+    status: 429, headers: { 'content-type': 'application/json', 'retry-after': '7' },
+  });
+  await assert.rejects(AI.analyze(cfg, input), (e) => e.code === 'ratelimit' && e.retryAfterMs === 7000);
+  responder = () => json(429, { error: { message: 'You exceeded your current quota', type: 'insufficient_quota', code: 'insufficient_quota' } });
+  await assert.rejects(AI.analyze(cfg, input), (e) => e.code === 'quota');
+});
+
+test('上限: Claudeは、SDKが1回やり直したあとも上限なら、示された待ち時間を添える', async () => {
+  responder = () => new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'Number of requests has exceeded your rate limit' } }), {
+    status: 429, headers: { 'content-type': 'application/json', 'retry-after': '1' },
+  });
+  await assert.rejects(
+    AI.analyze({ provider: 'claude', apiKey: 'k', model: 'claude-haiku-4-5' }, input),
+    (e) => e.code === 'ratelimit' && e.retryAfterMs === 1000,
+  );
+  assert.equal(calls.length, 2, 'SDKは1回だけやり直す');
+});
+
 test('要点はGeminiだけ(ほかのサービスでは、呼ばずに案内する)', async () => {
   responder = () => { throw new Error('呼ばれてはいけない'); };
   assert.equal(AI.canSummarize({ provider: 'gemini' }), true);

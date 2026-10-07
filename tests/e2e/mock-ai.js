@@ -59,9 +59,10 @@ function summaryChunks() {
 // opts.geminiUsage: 自動判定1回で使った数(既定: 入力800・出力50)
 // opts.summaryFailFirst: 要点の1回目を、混雑(503)で失敗させる
 // opts.claudeStatus: Claudeへの送信を、この状態番号で失敗させる
+// opts.geminiFail: Geminiの自動判定を、前から順にこの応答で失敗させる([{ status, body }] か [{ abort: true }])
 export async function mockAI(page, opts = {}) {
   const log = [];
-  const state = { summaryFailed: false };
+  const state = { summaryFailed: false, geminiFail: (opts.geminiFail || []).slice() };
   const geminiUsage = opts.geminiUsage || { promptTokenCount: 800, candidatesTokenCount: 50, totalTokenCount: 850 };
   await page.route(/https:\/\/(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com)\/.*/, async (route) => {
     const req = route.request();
@@ -73,7 +74,7 @@ export async function mockAI(page, opts = {}) {
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     const url = req.url();
     const body = req.postData() ? JSON.parse(req.postData()) : null;
-    log.push({ url, method: req.method(), headers: req.headers(), body });
+    log.push({ url, method: req.method(), headers: req.headers(), body, at: Date.now() });
     const reply = (status, obj) => route.fulfill({ status, headers: { ...cors, 'content-type': 'application/json' }, body: JSON.stringify(obj) });
 
     if (url.includes('api.anthropic.com')) {
@@ -113,6 +114,9 @@ export async function mockAI(page, opts = {}) {
       return route.fulfill({ status: 200, headers: { ...cors, 'content-type': 'text/event-stream' }, body: summaryChunks() });
     }
     if (url.includes(':generateContent')) {
+      const fail = state.geminiFail.shift();
+      if (fail && fail.abort) return route.abort('failed');
+      if (fail) return reply(fail.status, fail.body);
       const user = body.contents[0].parts[0].text;
       const json = body.generationConfig && body.generationConfig.responseMimeType === 'application/json';
       const text = json ? JSON.stringify(analyzeFake(user)) : explainFake(user);

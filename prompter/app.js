@@ -1,6 +1,7 @@
 import * as Detect from './detect.js';
 import * as AI from './ai/index.js';
 import * as Backup from './backup.js';
+import * as Pacing from './pacing.js';
 import { parseSummary, todayString } from './ai/common.js';
 
 const $ = (s) => document.querySelector(s);
@@ -9,7 +10,6 @@ const FEED_MAX = 40; // 画面に残すカードの数
 const DEDUPE_MS = 5 * 60 * 1000;
 const AI_WAIT_MS = 1200; // 話の区切りを待ってから、まとめて送る
 const AI_FLUSH_CHARS = 120; // これ以上たまったら、待たずに送る
-const AI_MIN_INTERVAL = 1500; // 送る間隔の最小値
 const CONTEXT_LINES = 2; // 手がかりとして一緒に送る、直前の文の数
 const SETTINGS_VERSION = 3;
 const SLOW_TEST_MS = 8000; // 接続テストでこれより遅ければ、速いモデルを案内する
@@ -208,7 +208,8 @@ const state = {
   known: new Set(store.get('pl_known', [])),
   settings: loadSettings(),
   keys: store.get('pl_keys', {}), // AIサービスごとのAPIキー
-  ai: { pending: [], timer: null, busy: false, halted: '', nextAt: 0 },
+  // interval: 送る間隔(上限にかかると広げる)、failures: 通信の失敗が続いた回数
+  ai: { pending: [], timer: null, busy: false, halted: '', nextAt: 0, interval: Pacing.MIN_INTERVAL, failures: 0 },
   summaryBusy: 0,
   usage: {}, // この画面を開いてから使ったトークン(種類ごと)
   ui: 1, // 設定が変わってカードのボタンが変わるときに増やす
@@ -435,7 +436,9 @@ async function flushAI() {
     return;
   }
 
-  const batch = ai.pending.splice(0);
+  // たまりすぎた分は、新しい発言を優先して送り、入りきらない古い分は簡易判定に回す
+  const { send: batch, older } = Pacing.takeBatch(ai.pending.splice(0));
+  if (older.length) detectOffline(older);
   const start = Math.max(0, state.lines.length - batch.length);
   const context = state.lines.slice(Math.max(0, start - CONTEXT_LINES), start).map((l) => l.text);
   const gen = state.gen;
@@ -449,13 +452,15 @@ async function flushAI() {
     const termCards = result.terms.filter((t) => !isKnown(t.term)).map((t) => aiTermCard(t, batch));
     const riskCards = result.risks.map((r) => aiRiskCard(r, batch));
     pushBatch(termCards, riskCards);
+    ai.failures = 0;
+    ai.interval = Pacing.relax(ai.interval);
     setStatus(baseStatus());
   } catch (e) {
     if (gen !== state.gen) return;
     handleAIError(e, batch);
   } finally {
     ai.busy = false;
-    ai.nextAt = Math.max(ai.nextAt, Date.now() + AI_MIN_INTERVAL);
+    ai.nextAt = Math.max(ai.nextAt, Date.now() + ai.interval);
     updateAiUi();
     renderFeed();
     renderTranscript();
@@ -464,18 +469,25 @@ async function flushAI() {
 }
 
 function handleAIError(e, batch) {
+  const ai = state.ai;
   const code = e && e.code;
   const msg = (e && e.message) || 'AIの呼び出しで、エラーが起きました。';
-  if (['auth', 'permission', 'notfound', 'config'].includes(code)) {
-    // 設定を直すまでは送らない
-    state.ai.halted = msg;
+  if (['auth', 'permission', 'notfound', 'config', 'quota'].includes(code)) {
+    // 設定を直すか、上限が戻るまでは送らない
+    ai.halted = msg;
     setStatus(msg + ' いまは簡易判定で動いています。', true);
   } else if (code === 'ratelimit') {
-    state.ai.nextAt = Date.now() + 20000;
-    setStatus(msg, true);
+    // 送る間隔を広げ、サービスが示した時間(なければ20秒)待つ
+    ai.interval = Pacing.widen(ai.interval);
+    const wait = Pacing.rateLimitWait(e.retryAfterMs);
+    ai.nextAt = Date.now() + wait;
+    setStatus('利用上限か混雑のため、約' + Math.ceil(wait / 1000) + '秒待ってから再開します。', true);
   } else if (['network', 'timeout', 'server'].includes(code)) {
-    state.ai.nextAt = Date.now() + 5000;
-    setStatus(msg, true);
+    // 失敗が続くほど、長く待つ
+    ai.failures++;
+    const wait = Pacing.backoff(ai.failures);
+    ai.nextAt = Date.now() + wait;
+    setStatus(msg + ' 約' + Math.round(wait / 1000) + '秒後に、もう一度試します。', true);
   } else {
     setStatus(msg, true);
   }
@@ -1491,6 +1503,10 @@ function setTestResult(text, kind) {
 
 function onAiSettingChanged() {
   state.ai.halted = '';
+  // 送る間隔も、最初から測り直す
+  state.ai.interval = Pacing.MIN_INTERVAL;
+  state.ai.failures = 0;
+  state.ai.nextAt = 0;
   setTestResult('');
   updateAiUi();
 }

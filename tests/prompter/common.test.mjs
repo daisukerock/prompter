@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AIError, buildAnalyzeInput, buildExplainInput, buildSummaryInput, httpError, makeUsage, normalizeResult, parseJsonLoose,
-  parseSummary, readSse, todayString,
+  AIError, buildAnalyzeInput, buildExplainInput, buildSummaryInput, httpError, isQuotaExhausted, makeUsage, normalizeResult,
+  parseJsonLoose, parseSummary, readSse, retryAfterOf, todayString,
 } from '../../prompter/ai/common.js';
 
 test('発言の「<」「>」を全角にして、区切りの印を偽装できないようにする', () => {
@@ -97,4 +97,23 @@ test('使ったトークン数を、同じ形にそろえる(数でない値や�
   assert.deepEqual(makeUsage({ searches: 2 }), { input: 0, output: 0, thinking: 0, cached: 0, searches: 2 });
   assert.equal(makeUsage({ input: -5, output: NaN, thinking: 'x' }), null);
   assert.equal(makeUsage(), null);
+});
+
+test('待ち時間を、retry-after(秒・日時)や、GeminiのRetryInfoから読む', () => {
+  assert.equal(retryAfterOf(new Headers({ 'retry-after': '12' }), null), 12000);
+  const later = new Date(Date.now() + 30000).toUTCString();
+  const ms = retryAfterOf(new Headers({ 'retry-after': later }), null);
+  assert.ok(ms > 25000 && ms <= 30000, String(ms));
+  assert.equal(retryAfterOf(null, { error: { details: [{ retryDelay: '0.5s' }] } }), 500);
+  assert.equal(retryAfterOf(new Headers(), { error: { details: [{ retryDelay: 'soon' }] } }), 0);
+  assert.equal(retryAfterOf(undefined, undefined), 0);
+});
+
+test('待っても戻らない上限(1日の上限・残高不足)を見分ける', () => {
+  assert.equal(isQuotaExhausted({ error: { details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } }), true);
+  assert.equal(isQuotaExhausted({ error: { details: [{ violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel' }] }] } }), false);
+  assert.equal(isQuotaExhausted({ error: { code: 'insufficient_quota' } }), true);
+  assert.equal(isQuotaExhausted(null), false);
+  assert.equal(httpError(429, 'x', { error: { type: 'insufficient_quota' } }).code, 'quota');
+  assert.equal(httpError(429, 'x', null).code, 'ratelimit');
 });

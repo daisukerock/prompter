@@ -55,6 +55,11 @@ export async function demoDone(page) {
   await expect(page.locator('#busyBar')).not.toHaveClass(/is-on/);
 }
 
+// 要点のシートが出る動きを終えるまで待つ(動いている途中は、つまむ場所がずれるため)
+export async function sheetSettled(page) {
+  await expect.poll(() => page.locator('#sheet').evaluate((s) => s.getAnimations().length)).toBe(0);
+}
+
 // 表の各行を「a | b | c」の形の文字にする
 export function tableRows(page, selector) {
   return page.$$eval(selector + ' tr', (trs) => trs.map((tr) => [...tr.children].map((c) => c.textContent).join(' | ')));

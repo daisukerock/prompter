@@ -2,7 +2,7 @@
 // 利用者が入れたAPIキーで、ブラウザから直接Claude APIを呼ぶ。
 import {
   AIError, MESSAGES, RESULT_SCHEMA, SYSTEM_ANALYZE, SYSTEM_EXPLAIN,
-  buildAnalyzeInput, buildExplainInput, makeUsage, normalizeResult, withDetail,
+  buildAnalyzeInput, buildExplainInput, makeUsage, normalizeResult, retryAfterOf, withDetail,
 } from './common.js';
 
 let sdkPromise = null;
@@ -65,7 +65,9 @@ function toAIError(e, Anthropic) {
   if (e instanceof Anthropic.AuthenticationError) return new AIError('auth', MESSAGES.auth);
   if (e instanceof Anthropic.PermissionDeniedError) return new AIError('permission', MESSAGES.permission);
   if (e instanceof Anthropic.NotFoundError) return new AIError('notfound', MESSAGES.notfound);
-  if (e instanceof Anthropic.RateLimitError) return new AIError('ratelimit', MESSAGES.ratelimit);
+  if (e instanceof Anthropic.RateLimitError) {
+    return new AIError('ratelimit', MESSAGES.ratelimit, { retryAfterMs: retryAfterOf(e.headers, e.error) });
+  }
   if (e instanceof Anthropic.BadRequestError) {
     return new AIError('badrequest', withDetail(MESSAGES.badrequest, apiMessage(e)));
   }

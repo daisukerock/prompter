@@ -1,5 +1,5 @@
 // Gemini: デモ→カード→要点(Google検索つき)→保存→書き出し
-import { test, expect, useProvider, say, card, demoDone } from './fixtures.js';
+import { test, expect, useProvider, say, card, demoDone, sheetSettled } from './fixtures.js';
 import { mockAI } from './mock-ai.js';
 
 test.use({ viewport: { width: 390, height: 844 } });
@@ -36,6 +36,7 @@ test('デモ→要点→引っぱって閉じる→保存→書き出し→保�
   await expect(page.locator('#sumMeta')).toContainText('使ったトークン: 入力 1,620・出力 290(うち思考 200)・Google検索 1回');
 
   // 下に引っぱって閉じる
+  await sheetSettled(page);
   const grip = await page.locator('#sheetGrip').boundingBox();
   await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
   await page.mouse.down();

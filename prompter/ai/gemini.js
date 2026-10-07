@@ -94,7 +94,7 @@ async function errorOf(res) {
   let data = null;
   try { data = await res.json(); } catch (e) { data = null; }
   const detail = data && data.error && (data.error.message || data.error.status);
-  return httpError(res.status, detail);
+  return httpError(res.status, detail, data, res.headers);
 }
 
 // 検索の裏付け情報は、何回かに分けて届くことがあるので、まとめる
@@ -164,7 +164,7 @@ export async function summarize(cfg, term, quote, opts = {}) {
       await readSse(res, (chunk) => {
         // 使った数は、届くたびに増えていくので、最後に届いたものを使う
         if (chunk.usageMetadata) usage = chunk.usageMetadata;
-        if (chunk.error) throw httpError(chunk.error.code || 500, chunk.error.message);
+        if (chunk.error) throw httpError(chunk.error.code || 500, chunk.error.message, chunk);
         if (chunk.promptFeedback && chunk.promptFeedback.blockReason) throw new AIError('refusal', MESSAGES.refusal);
         const cand = chunk.candidates && chunk.candidates[0];
         if (!cand) return;
