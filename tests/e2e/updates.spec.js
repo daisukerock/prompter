@@ -21,6 +21,24 @@ test('画面とプログラムの版が違えば、1回だけ読み込み直し�
   await expect(page.locator('#bootError')).toBeHidden();
 });
 
+test('読み込み直したことを記録できない端末では、版が違っても読み込み直さずに動かす(繰り返さない)', async ({ page }) => {
+  let pages = 0;
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'sessionStorage', { configurable: true, get() { throw new DOMException('blocked', 'SecurityError'); } });
+  });
+  await page.route(/\/(index\.html)?(\?.*)?$/, async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    pages++;
+    const res = await route.fetch();
+    const body = (await res.text()).replace(/(<meta name="app-version" content=")[^"]*"/, '$1old-version"');
+    return route.fulfill({ response: res, body });
+  });
+  await page.goto('index.html');
+  await expect(page.locator('#aiToggle')).toHaveText('AI未設定');
+  await page.waitForTimeout(500);
+  expect(pages).toBe(1);
+});
+
 test('版がそろっていれば、読み込み直さない', async ({ page }) => {
   let pages = 0;
   page.on('request', (r) => { if (r.resourceType() === 'document') pages++; });

@@ -1836,9 +1836,14 @@ function versionMatches() {
   const page = meta ? meta.content : 'dev';
   if (page === BUILD) return true;
   let tried = null;
-  try { tried = sessionStorage.getItem('pl_reload_for'); } catch (e) { /* 使えなくても続ける */ }
+  try {
+    tried = sessionStorage.getItem('pl_reload_for');
+    if (tried !== BUILD) sessionStorage.setItem('pl_reload_for', BUILD);
+  } catch (e) {
+    // 読み込み直したことを記録できない端末では、読み込み直しが止まらなくなるので、そのまま動かす
+    return true;
+  }
   if (tried === BUILD) return true;
-  try { sessionStorage.setItem('pl_reload_for', BUILD); } catch (e) { /* 無視 */ }
   location.reload();
   return false;
 }
